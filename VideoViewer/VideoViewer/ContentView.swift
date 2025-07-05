@@ -814,6 +814,28 @@ struct VideoListView: View {
                 Text(getDisplayName(for: directoryURL))
                     .font(.title2)
                 
+                // Add folder access button for permission issues
+                Button(action: {
+                    let panel = NSOpenPanel()
+                    panel.canChooseFiles = false
+                    panel.canChooseDirectories = true
+                    panel.allowsMultipleSelection = false
+                    panel.message = "Grant access to a folder"
+                    
+                    if panel.runModal() == .OK {
+                        if let url = panel.url {
+                            // Save bookmark for persistent access
+                            saveBookmark(for: url)
+                        }
+                    }
+                }) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                }
+                .buttonStyle(.plain)
+                .help("Grant Folder Access")
+                
                 // Network drive indicator
                 if isNetworkPath(directoryURL) {
                     HStack(spacing: 4) {
@@ -1084,9 +1106,54 @@ struct VideoListView: View {
             return contents.filter { url in
                 videoExtensions.contains(url.pathExtension.lowercased())
             }.sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
-        } catch {
+        } catch let error as NSError {
             print("Error reading directory: \(error)")
+            
+            // If it's a permission error, automatically prompt for access
+            if error.domain == NSCocoaErrorDomain && (error.code == 256 || error.code == 257) {
+                DispatchQueue.main.async {
+                    self.promptForDirectoryAccess()
+                }
+            }
             return []
+        }
+    }
+    
+    private func promptForDirectoryAccess() {
+        let alert = NSAlert()
+        alert.messageText = "Permission Required"
+        alert.informativeText = "VideoViewer needs permission to access '\(directoryURL.lastPathComponent)'. Would you like to grant access?"
+        alert.addButton(withTitle: "Grant Access")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .informational
+        
+        if alert.runModal() == .alertFirstButtonReturn {
+            let openPanel = NSOpenPanel()
+            openPanel.canChooseDirectories = true
+            openPanel.canChooseFiles = false
+            openPanel.allowsMultipleSelection = false
+            openPanel.message = "Select '\(directoryURL.lastPathComponent)' to grant access"
+            openPanel.prompt = "Grant Access"
+            openPanel.directoryURL = directoryURL.deletingLastPathComponent()
+            
+            if openPanel.runModal() == .OK, let url = openPanel.url {
+                // Save bookmark for persistent access
+                do {
+                    let bookmarkData = try url.bookmarkData(
+                        options: .withSecurityScope,
+                        includingResourceValuesForKeys: nil,
+                        relativeTo: nil
+                    )
+                    UserDefaults.standard.set(bookmarkData, forKey: "bookmark_\(url.path)")
+                    
+                    // Refresh the view
+                    loadVideoFiles()
+                    loadThumbnails()
+                    applyFilters()
+                } catch {
+                    print("Failed to save bookmark: \(error)")
+                }
+            }
         }
     }
     
@@ -1340,6 +1407,25 @@ struct VideoListView: View {
         // ResolutionCache mechanism when the view refreshes
         
         print("Directory refreshed: \(directoryURL.path)")
+    }
+    
+    private func saveBookmark(for url: URL) {
+        do {
+            let bookmarkData = try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            
+            UserDefaults.standard.set(bookmarkData, forKey: "bookmark_\(url.path)")
+            print("Saved bookmark for: \(url.path)")
+            
+            // Try to access the URL to establish permission
+            _ = url.startAccessingSecurityScopedResource()
+            
+        } catch {
+            print("Failed to save bookmark: \(error)")
+        }
     }
 }
 

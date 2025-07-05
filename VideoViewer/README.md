@@ -9,6 +9,9 @@ A native macOS video browser and player application built with SwiftUI, designed
 - **Dual view modes** - Switch between grid view with thumbnails and compact list view
 - **Adjustable thumbnail sizes** - Customize thumbnail size with a slider (100-480px)
 - **Smart thumbnail generation** - Automatically generates and caches video thumbnails
+- **Network drive detection** - Optimized performance for network mounted volumes
+- **Inline filename editing** - Click any filename to rename it directly
+- **Refresh button** - Rescan directories for new content
 - **Persistent navigation** - Remembers your last selected directory
 
 ### Video Playback
@@ -24,6 +27,17 @@ A native macOS video browser and player application built with SwiftUI, designed
   - Video resolution (4K, 1080p, 720p, etc.)
 - **Visual indicators** - Green checkmarks on thumbnails show categorized videos
 - **Bulk operations** - Apply categories to videos quickly with checkbox grids
+
+### File Management
+- **Batch cleanup system** - Advanced filename cleanup with:
+  - Search and replace rules with wildcard support (* matches any text)
+  - Case-insensitive matching
+  - Rule ordering with drag-and-drop
+  - Preview changes before applying
+  - Batch processing (20, 50, 100, 200, or all files)
+  - Automatic space cleanup and normalization
+- **Right-click delete** - Remove videos with confirmation dialog
+- **Inline rename** - Click any filename to edit it directly
 
 ### Performance
 - **Resolution caching** - Instant loading of video metadata after first scan
@@ -86,6 +100,47 @@ open VideoViewer.xcodeproj
 - **Categories database**: SQLite database stored in Application Support
 - **Preferences**: Volume, view settings stored in UserDefaults
 - **Resolution cache**: Cached in UserDefaults for fast loading
+- **Network thumbnails**: Cached in `~/Library/Caches/VideoViewer/thumbnails/`
+
+## Troubleshooting
+
+### "The file couldn't be opened" Error (Error Code 256)
+
+If you see this error when trying to access folders like Downloads or Documents, it's a macOS permissions issue. Here's how to fix it:
+
+#### Solution 1: Grant Permission via System Settings
+1. Open **System Settings** → **Privacy & Security** → **Files and Folders**
+2. Find **VideoViewer** in the list
+3. Enable toggles for:
+   - Downloads Folder
+   - Movies Folder
+   - Documents Folder
+   - Any other folders you want to access
+
+#### Solution 2: Use the Grant Access Button
+- Click the folder icon (folder.badge.plus) in the header to explicitly grant folder access
+- Select the folder you want to access in the dialog
+- This will save persistent access permissions
+
+#### Solution 3: Reset All Permissions (if needed)
+```bash
+tccutil reset All com.example.VideoViewer
+```
+Then restart the app and grant permissions when prompted.
+
+#### Solution 4: For Developers - Disable Sandboxing
+If building from source, you can temporarily disable sandboxing:
+1. In Xcode, select the VideoViewer target
+2. Go to "Signing & Capabilities"
+3. Remove the "App Sandbox" capability
+4. Or use the included `VideoViewer-NoSandbox.entitlements` file
+
+**Note**: The app is sandboxed for security, which requires explicit permission to access user folders. This is standard macOS security behavior.
+
+### Network Drive Performance
+- Network drives are automatically detected and show a "Network Drive" badge
+- Thumbnails are cached locally for better performance
+- Cache expires after 7 days to ensure freshness
 
 ## Architecture
 
