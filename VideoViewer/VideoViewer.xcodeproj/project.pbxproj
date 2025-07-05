@@ -12,6 +12,7 @@
 		1D12345A1234567890ABCDEF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1D1234591234567890ABCDEF /* Assets.xcassets */; };
 		1D12345D1234567890ABCDEF /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1D12345C1234567890ABCDEF /* Preview Assets.xcassets */; };
 		1D1234651234567890ABCDEF /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D1234641234567890ABCDEF /* AppDelegate.swift */; };
+		B405A64B022027AD62B06928 /* CategorySystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = F76E539E45EE7215CB3D371B /* CategorySystem.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,6 +23,7 @@
 		1D12345C1234567890ABCDEF /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		1D12345E1234567890ABCDEF /* VideoViewer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VideoViewer.entitlements; sourceTree = "<group>"; };
 		1D1234641234567890ABCDEF /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		F76E539E45EE7215CB3D371B /* CategorySystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategorySystem.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -56,6 +58,7 @@
 			children = (
 				1D1234551234567890ABCDEF /* VideoViewerApp.swift */,
 				1D1234571234567890ABCDEF /* ContentView.swift */,
+				F76E539E45EE7215CB3D371B /* CategorySystem.swift */,
 				1D1234641234567890ABCDEF /* AppDelegate.swift */,
 				1D1234591234567890ABCDEF /* Assets.xcassets */,
 				1D12345E1234567890ABCDEF /* VideoViewer.entitlements */,
@@ -100,7 +103,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1500;
-				LastUpgradeCheck = 1500;
+				LastUpgradeCheck = 1630;
 				TargetAttributes = {
 					1D1234511234567890ABCDEF = {
 						CreatedOnToolsVersion = 15.0;
@@ -143,6 +146,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1D1234581234567890ABCDEF /* ContentView.swift in Sources */,
+				B405A64B022027AD62B06928 /* CategorySystem.swift in Sources */,
 				1D1234561234567890ABCDEF /* VideoViewerApp.swift in Sources */,
 				1D1234651234567890ABCDEF /* AppDelegate.swift in Sources */,
 			);
@@ -185,6 +189,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -248,6 +253,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -278,6 +284,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"VideoViewer/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -303,6 +310,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"VideoViewer/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;

@@ -723,6 +723,7 @@ struct VideoPlayerContent: View {
     @StateObject private var tracker = VideoPlayerContentTracker()
     @StateObject private var categoryManager = CategoryManager.shared
     @State private var selectedCategories: Set<Int> = []
+    @State private var showCategories: Bool = false
     
     init(videoURL: URL) {
         self.videoURL = videoURL
@@ -801,7 +802,7 @@ struct VideoPlayerContent: View {
             // Bottom toolbar
             VStack(spacing: 0) {
                 // Category checkboxes
-                if !categoryManager.categories.isEmpty {
+                if !categoryManager.categories.isEmpty && showCategories {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Categories")
@@ -809,8 +810,10 @@ struct VideoPlayerContent: View {
                                 .foregroundColor(.white)
                                 .padding(.bottom, 4)
                             
-                            ForEach(categoryManager.categories) { category in
-                                HStack {
+                            LazyVGrid(columns: [
+                                GridItem(.adaptive(minimum: 120, maximum: 200), spacing: 12)
+                            ], spacing: 8) {
+                                ForEach(categoryManager.categories) { category in
                                     Toggle(isOn: Binding(
                                         get: { selectedCategories.contains(category.id) },
                                         set: { isSelected in
@@ -828,10 +831,10 @@ struct VideoPlayerContent: View {
                                     )) {
                                         Text(category.name)
                                             .foregroundColor(.white)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
                                     }
                                     .toggleStyle(CheckboxToggleStyle())
-                                    
-                                    Spacer()
                                 }
                             }
                         }
@@ -841,8 +844,23 @@ struct VideoPlayerContent: View {
                     .background(Color.black.opacity(0.6))
                 }
                 
-                // Capture button
+                // Bottom controls
                 HStack {
+                    // Categories toggle button
+                    if !categoryManager.categories.isEmpty {
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showCategories.toggle()
+                            }
+                        }) {
+                            Image(systemName: showCategories ? "tag.fill" : "tag")
+                                .foregroundColor(.white)
+                        }
+                        .buttonStyle(.plain)
+                        .help(showCategories ? "Hide Categories" : "Show Categories")
+                        .padding()
+                    }
+                    
                     Spacer()
                     
                     Button(action: {
