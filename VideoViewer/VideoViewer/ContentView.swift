@@ -4,6 +4,7 @@ import AppKit
 
 extension Notification.Name {
     static let refreshBrowser = Notification.Name("refreshBrowser")
+    static let refreshThumbnails = Notification.Name("refreshThumbnails")
 }
 
 class FileItem: ObservableObject, Identifiable {
@@ -100,9 +101,21 @@ struct ContentView: View {
                 }
             }
         }
+        .onAppear {
+            loadLastSelectedDirectory()
+        }
+        .onChange(of: selectedURL) { oldValue, newValue in
+            if let url = newValue {
+                saveLastSelectedDirectory(url)
+            }
+        }
         .onChange(of: videoToPlay) { oldValue, newValue in
             if newValue != nil {
-                showingVideoPlayer = true
+                // Reset state to allow reopening same video
+                showingVideoPlayer = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    showingVideoPlayer = true
+                }
             }
         }
         .background(
@@ -113,6 +126,41 @@ struct ContentView: View {
                 }
             }
         )
+    }
+    
+    private func saveLastSelectedDirectory(_ url: URL) {
+        do {
+            let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(bookmarkData, forKey: "lastSelectedDirectory")
+        } catch {
+            // If we can't create a bookmark, just save the path
+            UserDefaults.standard.set(url.path, forKey: "lastSelectedDirectoryPath")
+        }
+    }
+    
+    private func loadLastSelectedDirectory() {
+        // Try to load from bookmark first (preserves permissions)
+        if let bookmarkData = UserDefaults.standard.data(forKey: "lastSelectedDirectory") {
+            do {
+                var isStale = false
+                let url = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+                if !isStale {
+                    _ = url.startAccessingSecurityScopedResource()
+                    selectedURL = url
+                    return
+                }
+            } catch {
+                print("Failed to resolve bookmark: \(error)")
+            }
+        }
+        
+        // Fallback to path if bookmark fails
+        if let path = UserDefaults.standard.string(forKey: "lastSelectedDirectoryPath") {
+            let url = URL(fileURLWithPath: path)
+            if FileManager.default.fileExists(atPath: url.path) {
+                selectedURL = url
+            }
+        }
     }
 }
 
@@ -319,14 +367,56 @@ struct VideoListView: View {
     @Binding var videoFiles: [URL]
     @Binding var videoToPlay: URL?
     @State private var localVideoFiles: [URL] = []
+    @State private var isGridView = UserDefaults.standard.bool(forKey: "isGridView")
+    @State private var thumbnails: [URL: NSImage] = [:]
+    @State private var thumbnailSize: Double = UserDefaults.standard.double(forKey: "thumbnailSize") == 0 ? 150 : UserDefaults.standard.double(forKey: "thumbnailSize")
     
     let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
     
     var body: some View {
-        VStack(alignment: .leading) {
-            Text(getDisplayName(for: directoryURL))
-                .font(.title2)
-                .padding()
+        VStack(alignment: .leading, spacing: 0) {
+            // Header with title and view toggle
+            HStack {
+                Text(getDisplayName(for: directoryURL))
+                    .font(.title2)
+                Spacer()
+                
+                // View toggle button
+                Button(action: { 
+                    isGridView.toggle()
+                    UserDefaults.standard.set(isGridView, forKey: "isGridView")
+                }) {
+                    Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2")
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+                .help(isGridView ? "Switch to List View" : "Switch to Grid View")
+            }
+            .padding()
+            
+            // Thumbnail size slider (only in grid view)
+            if isGridView && !localVideoFiles.isEmpty {
+                HStack {
+                    Image(systemName: "photo.fill")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Slider(value: $thumbnailSize, in: 100...480, step: 10) {
+                        Text("Thumbnail Size")
+                    }
+                    .frame(width: 200)
+                    .onChange(of: thumbnailSize) { _, newValue in
+                        UserDefaults.standard.set(newValue, forKey: "thumbnailSize")
+                    }
+                    
+                    Text("\(Int(thumbnailSize))px")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(width: 50)
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+            }
             
             if localVideoFiles.isEmpty {
                 Spacer()
@@ -335,25 +425,55 @@ struct VideoListView: View {
                     .frame(maxWidth: .infinity)
                 Spacer()
             } else {
-                List(localVideoFiles, id: \.self) { videoURL in
-                    HStack {
-                        Image(systemName: "film")
-                            .foregroundColor(.blue)
-                        Text(videoURL.lastPathComponent)
-                        Spacer()
+                if isGridView {
+                    // Grid view
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: thumbnailSize, maximum: thumbnailSize + 50))], spacing: 20) {
+                            ForEach(localVideoFiles, id: \.self) { videoURL in
+                                VideoGridItem(videoURL: videoURL, thumbnail: thumbnails[videoURL], size: thumbnailSize)
+                                    .onTapGesture(count: 2) {
+                                        videoToPlay = videoURL
+                                    }
+                            }
+                        }
+                        .padding()
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) {
-                        videoToPlay = videoURL
+                } else {
+                    // List view
+                    List(localVideoFiles, id: \.self) { videoURL in
+                        HStack {
+                            if let thumbnail = thumbnails[videoURL] {
+                                Image(nsImage: thumbnail)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(width: 60, height: 34)
+                                    .cornerRadius(4)
+                            } else {
+                                Image(systemName: "film")
+                                    .foregroundColor(.blue)
+                                    .frame(width: 60, height: 34)
+                            }
+                            Text(videoURL.lastPathComponent)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) {
+                            videoToPlay = videoURL
+                        }
                     }
                 }
             }
         }
         .onAppear {
             loadVideoFiles()
+            loadThumbnails()
         }
         .onChange(of: directoryURL) { _, _ in
             loadVideoFiles()
+            loadThumbnails()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .refreshThumbnails)) { _ in
+            loadThumbnails()
         }
     }
     
@@ -384,6 +504,86 @@ struct VideoListView: View {
             return []
         }
     }
+    
+    private func loadThumbnails() {
+        thumbnails.removeAll()
+        
+        let videoInfoURL = directoryURL.appendingPathComponent(".video_info")
+        guard FileManager.default.fileExists(atPath: videoInfoURL.path) else { return }
+        
+        for videoURL in localVideoFiles {
+            let videoName = videoURL.deletingPathExtension().lastPathComponent.lowercased()
+            let thumbnailURL = videoInfoURL.appendingPathComponent("\(videoName).png")
+            
+            if FileManager.default.fileExists(atPath: thumbnailURL.path),
+               let image = NSImage(contentsOf: thumbnailURL) {
+                thumbnails[videoURL] = image
+            }
+        }
+    }
+}
+
+struct VideoGridItem: View {
+    let videoURL: URL
+    let thumbnail: NSImage?
+    let size: Double
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            if let thumbnail = thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(height: size * 0.75) // Maintain 16:9 aspect ratio approximately
+                    .cornerRadius(8)
+                    .shadow(radius: 2)
+            } else {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.gray.opacity(0.2))
+                    .frame(height: size * 0.75)
+                    .overlay(
+                        Image(systemName: "film")
+                            .font(.system(size: size * 0.25))
+                            .foregroundColor(.gray)
+                    )
+            }
+            
+            Text(videoURL.lastPathComponent)
+                .font(.system(size: min(12, size * 0.08)))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+        }
+        .padding(8)
+        .background(Color.gray.opacity(0.1))
+        .cornerRadius(10)
+    }
+}
+
+// Window controller to properly manage window lifecycle
+class VideoWindowController: NSWindowController, NSWindowDelegate {
+    var onClose: (() -> Void)?
+    
+    convenience init(videoURL: URL, onClose: @escaping () -> Void) {
+        let window = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = videoURL.lastPathComponent
+        
+        self.init(window: window)
+        self.onClose = onClose
+        
+        let playerContent = VideoPlayerContent(videoURL: videoURL)
+        window.contentView = NSHostingView(rootView: playerContent)
+        window.delegate = self
+    }
+    
+    func windowWillClose(_ notification: Notification) {
+        onClose?()
+    }
 }
 
 struct WindowOpener: NSViewRepresentable {
@@ -401,43 +601,229 @@ struct WindowOpener: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
     
     private func openVideoWindow() {
-        let window = NSWindow(
-            contentRect: NSRect(x: 100, y: 100, width: 800, height: 600),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        
-        window.title = videoURL.lastPathComponent
-        window.contentView = NSHostingView(rootView: VideoPlayerContent(videoURL: videoURL, window: window))
-        window.makeKeyAndOrderFront(nil)
-        
-        // Reset the state when window closes
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification,
-            object: window,
-            queue: .main
-        ) { _ in
+        let controller = VideoWindowController(videoURL: videoURL) { [self] in
             self.isPresented = false
         }
+        controller.showWindow(nil)
+    }
+}
+
+// Simple wrapper to track last known volume and mute state
+class PlayerObserver: NSObject, ObservableObject {
+    private var lastKnownVolume: Float = 1.0
+    
+    func saveCurrentState(volume: Float, isMuted: Bool) {
+        UserDefaults.standard.set(volume, forKey: "lastVideoVolume")
+        UserDefaults.standard.set(isMuted, forKey: "lastVideoMuted")
+        print("Saved volume: \(volume), muted: \(isMuted)")
+    }
+    
+    func getLastVolume() -> Float {
+        // Check if we have a saved value (including 0 for mute)
+        if UserDefaults.standard.object(forKey: "lastVideoVolume") != nil {
+            return UserDefaults.standard.float(forKey: "lastVideoVolume")
+        }
+        // Default to 1.0 if nothing saved
+        return 1.0
+    }
+    
+    func getLastMuted() -> Bool {
+        return UserDefaults.standard.bool(forKey: "lastVideoMuted")
     }
 }
 
 struct VideoPlayerContent: View {
     let videoURL: URL
-    let window: NSWindow?
-    @State private var player: AVPlayer?
+    @State private var player: AVPlayer
+    @State private var isCapturing: Bool = false
+    @StateObject private var playerObserver = PlayerObserver()
+    @State private var volumeCheckTimer: Timer?
+    
+    init(videoURL: URL) {
+        self.videoURL = videoURL
+        // Initialize player in init instead of onAppear
+        let newPlayer = AVPlayer(url: videoURL)
+        self._player = State(initialValue: newPlayer)
+        
+        // Restore last saved volume and mute state
+        if UserDefaults.standard.object(forKey: "lastVideoVolume") != nil {
+            newPlayer.volume = UserDefaults.standard.float(forKey: "lastVideoVolume")
+        } else {
+            newPlayer.volume = 1.0
+        }
+        
+        // Restore mute state
+        newPlayer.isMuted = UserDefaults.standard.bool(forKey: "lastVideoMuted")
+        
+        print("Initialized player with volume: \(newPlayer.volume), muted: \(newPlayer.isMuted)")
+    }
     
     var body: some View {
-        VideoPlayer(player: player)
-            .onAppear {
-                player = AVPlayer(url: videoURL)
-                player?.play()
+        VStack(spacing: 0) {
+            VideoPlayer(player: player)
+                .onAppear {
+                    player.play()
+                    
+                    // Start a timer to periodically check volume and mute state
+                    volumeCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+                        let currentVolume = player.volume
+                        let currentMuted = player.isMuted
+                        
+                        // Check if volume or mute state changed
+                        if currentVolume != UserDefaults.standard.float(forKey: "lastVideoVolume") ||
+                           currentMuted != UserDefaults.standard.bool(forKey: "lastVideoMuted") {
+                            print("State changed - Volume: \(currentVolume), muted: \(currentMuted)")
+                            playerObserver.saveCurrentState(volume: currentVolume, isMuted: currentMuted)
+                        }
+                    }
+                }
+                .onDisappear {
+                    // Stop timer
+                    volumeCheckTimer?.invalidate()
+                    volumeCheckTimer = nil
+                    
+                    // Save current state before closing
+                    playerObserver.saveCurrentState(volume: player.volume, isMuted: player.isMuted)
+                    print("Final volume: \(player.volume), muted: \(player.isMuted)")
+                    
+                    // Clean shutdown
+                    player.pause()
+                    player.replaceCurrentItem(with: nil)
+                }
+            
+            // Bottom toolbar
+            HStack {
+                Spacer()
+                
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isCapturing = true
+                    }
+                    generateThumbnail()
+                    
+                    // Reset animation after a short delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            isCapturing = false
+                        }
+                    }
+                }) {
+                    Image(systemName: "camera.fill")
+                        .foregroundColor(.white)
+                        .scaleEffect(isCapturing ? 0.8 : 1.0)
+                        .opacity(isCapturing ? 0.6 : 1.0)
+                }
+                .buttonStyle(.plain)
+                .help("Generate Thumbnail")
+                .padding()
             }
-            .onDisappear {
-                player?.pause()
-                player = nil
+            .background(Color.black.opacity(0.8))
+        }
+        .background(Color.black)
+    }
+    
+    
+    private func generateThumbnail() {
+        guard let currentItem = player.currentItem else { return }
+        
+        let asset = currentItem.asset
+        let imageGenerator = AVAssetImageGenerator(asset: asset)
+        imageGenerator.appliesPreferredTrackTransform = true
+        
+        // Get exact current playback time
+        let currentTime = player.currentTime()
+        
+        imageGenerator.generateCGImagesAsynchronously(forTimes: [NSValue(time: currentTime)]) { _, cgImage, _, _, error in
+            if let error = error {
+                print("Error generating thumbnail: \(error)")
+                return
             }
-            .background(Color.black)
+            
+            guard let cgImage = cgImage else { return }
+            
+            DispatchQueue.main.async {
+                saveThumbnail(cgImage: cgImage, for: videoURL)
+            }
+        }
+    }
+    
+    private func aspectFitSize(originalSize: NSSize, maxSize: NSSize) -> NSSize {
+        let widthRatio = maxSize.width / originalSize.width
+        let heightRatio = maxSize.height / originalSize.height
+        let ratio = min(widthRatio, heightRatio)
+        
+        return NSSize(width: originalSize.width * ratio, height: originalSize.height * ratio)
+    }
+    
+    private func saveThumbnail(cgImage: CGImage, for videoURL: URL) {
+        let directoryURL = videoURL.deletingLastPathComponent()
+        let videoInfoURL = directoryURL.appendingPathComponent(".video_info")
+        
+        print("Video file: \(videoURL.path)")
+        print("Video directory: \(directoryURL.path)")
+        print("Thumbnail directory: \(videoInfoURL.path)")
+        
+        // Create .video_info directory if it doesn't exist
+        do {
+            try FileManager.default.createDirectory(at: videoInfoURL, withIntermediateDirectories: true, attributes: nil)
+            print("Successfully created directory: \(videoInfoURL.path)")
+        } catch {
+            print("Error creating .video_info directory: \(error)")
+            
+            // Show error alert
+            let alert = NSAlert()
+            alert.messageText = "Error Creating Directory"
+            alert.informativeText = "Failed to create .video_info directory: \(error.localizedDescription)"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+        
+        // Create thumbnail filename
+        let videoName = videoURL.deletingPathExtension().lastPathComponent.lowercased()
+        let thumbnailURL = videoInfoURL.appendingPathComponent("\(videoName).png")
+        
+        // Calculate thumbnail size (max 480x270, maintaining aspect ratio)
+        let originalSize = NSSize(width: cgImage.width, height: cgImage.height)
+        let maxSize = NSSize(width: 480, height: 270)
+        let thumbnailSize = aspectFitSize(originalSize: originalSize, maxSize: maxSize)
+        
+        // Create resized NSImage
+        let nsImage = NSImage(size: thumbnailSize)
+        nsImage.lockFocus()
+        let originalImage = NSImage(cgImage: cgImage, size: originalSize)
+        originalImage.draw(in: NSRect(origin: .zero, size: thumbnailSize))
+        nsImage.unlockFocus()
+        
+        guard let tiffData = nsImage.tiffRepresentation,
+              let bitmapRep = NSBitmapImageRep(data: tiffData),
+              let pngData = bitmapRep.representation(using: .png, properties: [:]) else {
+            print("Error converting image to PNG")
+            return
+        }
+        
+        do {
+            try pngData.write(to: thumbnailURL)
+            print("Thumbnail saved: \(thumbnailURL.path)")
+            print("Directory exists: \(FileManager.default.fileExists(atPath: videoInfoURL.path))")
+            
+            // Play camera sound - use simple beep for reliability
+            NSSound.beep()
+            print("Camera sound played (system beep)")
+            
+            // Notify to refresh thumbnails
+            NotificationCenter.default.post(name: .refreshThumbnails, object: nil)
+        } catch {
+            print("Error saving thumbnail: \(error)")
+            
+            // Show error alert
+            let alert = NSAlert()
+            alert.messageText = "Error Creating Thumbnail"
+            alert.informativeText = "Failed to save thumbnail: \(error.localizedDescription)"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
     }
 }
