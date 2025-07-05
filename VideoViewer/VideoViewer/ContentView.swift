@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import AppKit
+import SQLite3
 
 extension Notification.Name {
     static let refreshBrowser = Notification.Name("refreshBrowser")
@@ -73,32 +74,64 @@ class FileItem: ObservableObject, Identifiable {
     }
 }
 
+enum NavigationTab {
+    case videos
+    case categories
+}
+
 struct ContentView: View {
     @State private var selectedURL: URL?
     @State private var videoFiles: [URL] = []
     @State private var showingVideoPlayer = false
     @State private var videoToPlay: URL?
+    @State private var currentTab: NavigationTab = .videos
     
     var body: some View {
-        NavigationSplitView {
-            SimpleBrowser(selectedURL: $selectedURL)
-                .navigationSplitViewColumnWidth(min: 300, ideal: 350, max: 500)
-        } detail: {
-            if let selectedURL = selectedURL {
-                VideoListView(directoryURL: selectedURL, videoFiles: $videoFiles, videoToPlay: $videoToPlay)
-            } else {
-                VStack(spacing: 20) {
-                    Image(systemName: "folder.badge.questionmark")
-                        .font(.system(size: 60))
-                        .foregroundColor(.secondary)
-                    Text("Select a directory to view video files")
-                        .font(.title2)
-                        .foregroundColor(.secondary)
-                    Text("Click on any folder to navigate and view its contents")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
+        VStack(spacing: 0) {
+            // Tab bar
+            HStack(spacing: 20) {
+                Button(action: { currentTab = .videos }) {
+                    Label("Videos", systemImage: "play.rectangle")
+                        .foregroundColor(currentTab == .videos ? .accentColor : .secondary)
                 }
+                .buttonStyle(.plain)
+                
+                Button(action: { currentTab = .categories }) {
+                    Label("Categories", systemImage: "tag")
+                        .foregroundColor(currentTab == .categories ? .accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+                
+                Spacer()
+            }
+            .padding()
+            .background(Color.gray.opacity(0.1))
+            
+            // Content based on selected tab
+            if currentTab == .videos {
+                NavigationSplitView {
+                    SimpleBrowser(selectedURL: $selectedURL)
+                        .navigationSplitViewColumnWidth(min: 300, ideal: 350, max: 500)
+                } detail: {
+                    if let selectedURL = selectedURL {
+                        VideoListView(directoryURL: selectedURL, videoFiles: $videoFiles, videoToPlay: $videoToPlay)
+                    } else {
+                        VStack(spacing: 20) {
+                            Image(systemName: "folder.badge.questionmark")
+                                .font(.system(size: 60))
+                                .foregroundColor(.secondary)
+                            Text("Select a directory to view video files")
+                                .font(.title2)
+                                .foregroundColor(.secondary)
+                            Text("Click on any folder to navigate and view its contents")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                }
+            } else {
+                CategoriesView()
             }
         }
         .onAppear {
@@ -688,6 +721,8 @@ struct VideoPlayerContent: View {
     @StateObject private var playerObserver = PlayerObserver()
     @State private var volumeCheckTimer: Timer?
     @StateObject private var tracker = VideoPlayerContentTracker()
+    @StateObject private var categoryManager = CategoryManager.shared
+    @State private var selectedCategories: Set<Int> = []
     
     init(videoURL: URL) {
         self.videoURL = videoURL
@@ -713,6 +748,9 @@ struct VideoPlayerContent: View {
             VideoPlayer(player: player)
                 .onAppear {
                     player.play()
+                    
+                    // Load categories for this video
+                    selectedCategories = categoryManager.getCategoriesForVideo(videoPath: videoURL.path)
                     
                     // Start a timer to periodically check volume and mute state
                     activeTimerCount += 1
@@ -761,32 +799,76 @@ struct VideoPlayerContent: View {
                 }
             
             // Bottom toolbar
-            HStack {
-                Spacer()
-                
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        isCapturing = true
-                    }
-                    generateThumbnail()
-                    
-                    // Reset animation after a short delay
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            isCapturing = false
+            VStack(spacing: 0) {
+                // Category checkboxes
+                if !categoryManager.categories.isEmpty {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Categories")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .padding(.bottom, 4)
+                            
+                            ForEach(categoryManager.categories) { category in
+                                HStack {
+                                    Toggle(isOn: Binding(
+                                        get: { selectedCategories.contains(category.id) },
+                                        set: { isSelected in
+                                            if isSelected {
+                                                selectedCategories.insert(category.id)
+                                            } else {
+                                                selectedCategories.remove(category.id)
+                                            }
+                                            categoryManager.setVideoCategory(
+                                                videoPath: videoURL.path,
+                                                categoryId: category.id,
+                                                isSelected: isSelected
+                                            )
+                                        }
+                                    )) {
+                                        Text(category.name)
+                                            .foregroundColor(.white)
+                                    }
+                                    .toggleStyle(CheckboxToggleStyle())
+                                    
+                                    Spacer()
+                                }
+                            }
                         }
+                        .padding()
                     }
-                }) {
-                    Image(systemName: "camera.fill")
-                        .foregroundColor(.white)
-                        .scaleEffect(isCapturing ? 0.8 : 1.0)
-                        .opacity(isCapturing ? 0.6 : 1.0)
+                    .frame(maxHeight: 200)
+                    .background(Color.black.opacity(0.6))
                 }
-                .buttonStyle(.plain)
-                .help("Generate Thumbnail")
-                .padding()
+                
+                // Capture button
+                HStack {
+                    Spacer()
+                    
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            isCapturing = true
+                        }
+                        generateThumbnail()
+                        
+                        // Reset animation after a short delay
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                isCapturing = false
+                            }
+                        }
+                    }) {
+                        Image(systemName: "camera.fill")
+                            .foregroundColor(.white)
+                            .scaleEffect(isCapturing ? 0.8 : 1.0)
+                            .opacity(isCapturing ? 0.6 : 1.0)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Generate Thumbnail")
+                    .padding()
+                }
+                .background(Color.black.opacity(0.8))
             }
-            .background(Color.black.opacity(0.8))
         }
         .background(Color.black)
     }
