@@ -151,6 +151,11 @@ class CategoryManager: ObservableObject {
         
         if success {
             loadCategories()
+            // Notify that categories have been updated
+            NotificationCenter.default.post(
+                name: Notification.Name("categoriesUpdated"),
+                object: nil
+            )
         }
         
         return success
@@ -168,6 +173,11 @@ class CategoryManager: ObservableObject {
             if sqlite3_step(statement) == SQLITE_DONE {
                 sqlite3_finalize(statement)
                 loadCategories()
+                // Notify that categories have been updated
+                NotificationCenter.default.post(
+                    name: Notification.Name("categoriesUpdated"),
+                    object: nil
+                )
                 return true
             }
         }
@@ -186,6 +196,11 @@ class CategoryManager: ObservableObject {
             if sqlite3_step(statement) == SQLITE_DONE {
                 sqlite3_finalize(statement)
                 loadCategories()
+                // Notify that categories have been updated
+                NotificationCenter.default.post(
+                    name: Notification.Name("categoriesUpdated"),
+                    object: nil
+                )
                 return true
             }
         }

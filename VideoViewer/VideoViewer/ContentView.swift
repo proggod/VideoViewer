@@ -85,6 +85,9 @@ struct ContentView: View {
     @State private var showingVideoPlayer = false
     @State private var videoToPlay: URL?
     @State private var currentTab: NavigationTab = .videos
+    @State private var selectedFilterCategories: Set<Int> = []
+    @State private var selectedResolutions: Set<String> = []
+    @State private var showFilters = true
     
     var body: some View {
         VStack(spacing: 0) {
@@ -110,11 +113,37 @@ struct ContentView: View {
             // Content based on selected tab
             if currentTab == .videos {
                 NavigationSplitView {
-                    SimpleBrowser(selectedURL: $selectedURL)
-                        .navigationSplitViewColumnWidth(min: 300, ideal: 350, max: 500)
+                    VStack(spacing: 0) {
+                        // File browser
+                        SimpleBrowser(selectedURL: $selectedURL)
+                            .frame(minHeight: 200)
+                            .layoutPriority(showFilters ? 0.5 : 1)
+                        
+                        // Filter sidebar under file browser
+                        if showFilters {
+                            Divider()
+                            
+                            FilterSidebar(
+                                selectedCategories: $selectedFilterCategories,
+                                selectedResolutions: $selectedResolutions,
+                                directoryURL: selectedURL
+                            )
+                            .frame(minHeight: 200)
+                            .layoutPriority(0.5)
+                        }
+                    }
+                    .navigationSplitViewColumnWidth(min: 300, ideal: 350, max: 500)
                 } detail: {
+                    // Video list
                     if let selectedURL = selectedURL {
-                        VideoListView(directoryURL: selectedURL, videoFiles: $videoFiles, videoToPlay: $videoToPlay)
+                        VideoListView(
+                            directoryURL: selectedURL,
+                            videoFiles: $videoFiles,
+                            videoToPlay: $videoToPlay,
+                            selectedCategories: $selectedFilterCategories,
+                            selectedResolutions: $selectedResolutions,
+                            showFilters: $showFilters
+                        )
                     } else {
                         VStack(spacing: 20) {
                             Image(systemName: "folder.badge.questionmark")
@@ -128,12 +157,14 @@ struct ContentView: View {
                                 .foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
                         }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
             } else {
                 CategoriesView()
             }
         }
+        .frame(minWidth: 800, minHeight: 600)
         .onAppear {
             loadLastSelectedDirectory()
         }
@@ -398,14 +429,367 @@ struct DirectoryRow: View {
     }
 }
 
+// Resolution cache manager
+class ResolutionCache {
+    static let shared = ResolutionCache()
+    private let cacheKey = "videoResolutionCache"
+    private var cache: [String: [String: String]] = [:] // [directoryPath: [videoPath: resolution]]
+    
+    private init() {
+        loadCache()
+    }
+    
+    private func loadCache() {
+        if let data = UserDefaults.standard.data(forKey: cacheKey),
+           let decoded = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
+            cache = decoded
+        }
+    }
+    
+    private func saveCache() {
+        if let encoded = try? JSONEncoder().encode(cache) {
+            UserDefaults.standard.set(encoded, forKey: cacheKey)
+        }
+    }
+    
+    func getResolution(for videoPath: String, in directoryPath: String) -> String? {
+        return cache[directoryPath]?[videoPath]
+    }
+    
+    func setResolution(_ resolution: String, for videoPath: String, in directoryPath: String) {
+        if cache[directoryPath] == nil {
+            cache[directoryPath] = [:]
+        }
+        cache[directoryPath]?[videoPath] = resolution
+        saveCache()
+    }
+    
+    func getResolutions(for directoryPath: String) -> [String: String]? {
+        return cache[directoryPath]
+    }
+    
+    func clearCache(for directoryPath: String) {
+        cache.removeValue(forKey: directoryPath)
+        saveCache()
+    }
+}
+
+struct FilterSidebar: View {
+    @Binding var selectedCategories: Set<Int>
+    @Binding var selectedResolutions: Set<String>
+    let directoryURL: URL?
+    
+    @StateObject private var categoryManager = CategoryManager.shared
+    @State private var availableResolutions: Set<String> = []
+    @State private var videoResolutions: [URL: String] = [:]
+    @State private var isLoadingResolutions = false
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Clear all button
+            HStack {
+                Text("Filters")
+                    .font(.headline)
+                
+                Spacer()
+                
+                if !selectedCategories.isEmpty || !selectedResolutions.isEmpty {
+                    Button("Clear All") {
+                        selectedCategories.removeAll()
+                        selectedResolutions.removeAll()
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.accentColor)
+                }
+            }
+            .padding()
+            
+            // Side by side sections
+            HStack(alignment: .top, spacing: 0) {
+                // Categories section
+                if !categoryManager.categories.isEmpty {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Categories")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .padding(.bottom, 4)
+                            
+                            ForEach(categoryManager.categories) { category in
+                                Toggle(isOn: Binding(
+                                    get: { selectedCategories.contains(category.id) },
+                                    set: { isSelected in
+                                        if isSelected {
+                                            selectedCategories.insert(category.id)
+                                        } else {
+                                            selectedCategories.remove(category.id)
+                                        }
+                                    }
+                                )) {
+                                    Text(category.name)
+                                        .lineLimit(1)
+                                        .font(.caption)
+                                }
+                                .toggleStyle(CheckboxToggleStyle())
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                    .frame(maxWidth: .infinity)
+                    
+                    if !availableResolutions.isEmpty {
+                        Divider()
+                            .padding(.vertical, 8)
+                    }
+                }
+                
+                // Resolutions section
+                if !availableResolutions.isEmpty || isLoadingResolutions {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Resolution")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                
+                                if isLoadingResolutions {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .scaleEffect(0.8)
+                                }
+                            }
+                            .padding(.bottom, 4)
+                            
+                            ForEach(Array(availableResolutions).sorted { res1, res2 in
+                                let height1 = getResolutionHeight(res1)
+                                let height2 = getResolutionHeight(res2)
+                                return height1 > height2
+                            }, id: \.self) { resolution in
+                                Toggle(isOn: Binding(
+                                    get: { selectedResolutions.contains(resolution) },
+                                    set: { isSelected in
+                                        if isSelected {
+                                            selectedResolutions.insert(resolution)
+                                        } else {
+                                            selectedResolutions.remove(resolution)
+                                        }
+                                    }
+                                )) {
+                                    Text(resolution)
+                                        .font(.caption)
+                                }
+                                .toggleStyle(CheckboxToggleStyle())
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .onAppear {
+            loadVideoResolutions()
+        }
+        .onChange(of: directoryURL) { _, _ in
+            loadVideoResolutions()
+        }
+    }
+    
+    private func loadVideoResolutions() {
+        guard let directoryURL = directoryURL else { return }
+        
+        // First, load from cache
+        let directoryPath = directoryURL.path
+        if let cachedResolutions = ResolutionCache.shared.getResolutions(for: directoryPath) {
+            var newResolutions: Set<String> = []
+            var newVideoResolutions: [URL: String] = [:]
+            
+            for (videoPath, resolution) in cachedResolutions {
+                let videoURL = URL(fileURLWithPath: videoPath)
+                newVideoResolutions[videoURL] = resolution
+                newResolutions.insert(resolution)
+            }
+            
+            self.availableResolutions = newResolutions
+            self.videoResolutions = newVideoResolutions
+            
+            // Notify immediately with cached data
+            NotificationCenter.default.post(
+                name: Notification.Name("videoResolutionsUpdated"),
+                object: nil,
+                userInfo: ["resolutions": newVideoResolutions]
+            )
+        }
+        
+        // Then load any missing resolutions asynchronously
+        isLoadingResolutions = true
+        Task {
+            // Get all video files in directory
+            let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
+            
+            do {
+                let contents = try FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
+                let videoFiles = contents.filter { url in
+                    videoExtensions.contains(url.pathExtension.lowercased())
+                }
+                
+                var newResolutions: Set<String> = []
+                var newVideoResolutions: [URL: String] = [:]
+                
+                // Get resolution for each video file
+                for videoFile in videoFiles {
+                    let videoPath = videoFile.path
+                    
+                    // Check cache first
+                    if let cachedResolution = ResolutionCache.shared.getResolution(for: videoPath, in: directoryPath) {
+                        newVideoResolutions[videoFile] = cachedResolution
+                        newResolutions.insert(cachedResolution)
+                    } else {
+                        // Not in cache, load it
+                        if let resolution = await getVideoResolutionAsync(for: videoFile) {
+                            newVideoResolutions[videoFile] = resolution
+                            newResolutions.insert(resolution)
+                            // Cache the result
+                            ResolutionCache.shared.setResolution(resolution, for: videoPath, in: directoryPath)
+                        }
+                    }
+                }
+                
+                // Update on main thread
+                await MainActor.run {
+                    self.isLoadingResolutions = false
+                    self.availableResolutions = newResolutions
+                    self.videoResolutions = newVideoResolutions
+                    
+                    // Store resolutions for use in VideoListView
+                    NotificationCenter.default.post(
+                        name: Notification.Name("videoResolutionsUpdated"),
+                        object: nil,
+                        userInfo: ["resolutions": newVideoResolutions]
+                    )
+                }
+            } catch {
+                print("Error loading video files: \(error)")
+                await MainActor.run {
+                    self.isLoadingResolutions = false
+                }
+            }
+        }
+    }
+    
+    private func getVideoResolution(for url: URL) -> String? {
+        let asset = AVAsset(url: url)
+        
+        // Use synchronous loading for now to maintain compatibility
+        let semaphore = DispatchSemaphore(value: 0)
+        var resolution: String?
+        
+        Task {
+            do {
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                guard let track = tracks.first else {
+                    semaphore.signal()
+                    return
+                }
+                
+                let naturalSize = try await track.load(.naturalSize)
+                let preferredTransform = try await track.load(.preferredTransform)
+                
+                let size = naturalSize.applying(preferredTransform)
+                let height = Int(abs(size.height))
+                
+                // Common resolutions
+                switch height {
+                case 2160: resolution = "4K"
+                case 1440: resolution = "1440p"
+                case 1080: resolution = "1080p"
+                case 720: resolution = "720p"
+                case 480: resolution = "480p"
+                case 360: resolution = "360p"
+                default:
+                    if height > 2160 {
+                        resolution = "8K+"
+                    } else if height > 0 {
+                        resolution = "\(height)p"
+                    }
+                }
+            } catch {
+                print("Error loading video resolution: \(error)")
+            }
+            semaphore.signal()
+        }
+        
+        semaphore.wait()
+        return resolution
+    }
+    
+    private func getVideoResolutionAsync(for url: URL) async -> String? {
+        let asset = AVAsset(url: url)
+        
+        do {
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            guard let track = tracks.first else { return nil }
+            
+            let naturalSize = try await track.load(.naturalSize)
+            let preferredTransform = try await track.load(.preferredTransform)
+            
+            let size = naturalSize.applying(preferredTransform)
+            let height = Int(abs(size.height))
+            
+            // Common resolutions
+            switch height {
+            case 2160: return "4K"
+            case 1440: return "1440p"
+            case 1080: return "1080p"
+            case 720: return "720p"
+            case 480: return "480p"
+            case 360: return "360p"
+            default:
+                if height > 2160 {
+                    return "8K+"
+                } else if height > 0 {
+                    return "\(height)p"
+                }
+                return nil
+            }
+        } catch {
+            print("Error loading video resolution: \(error)")
+            return nil
+        }
+    }
+    
+    private func getResolutionHeight(_ resolution: String) -> Int {
+        switch resolution {
+        case "8K+": return 4320
+        case "4K": return 2160
+        case "1440p": return 1440
+        case "1080p": return 1080
+        case "720p": return 720
+        case "480p": return 480
+        case "360p": return 360
+        default:
+            // Extract number from format like "1234p"
+            let numStr = resolution.replacingOccurrences(of: "p", with: "")
+            return Int(numStr) ?? 0
+        }
+    }
+}
+
 struct VideoListView: View {
     let directoryURL: URL
     @Binding var videoFiles: [URL]
     @Binding var videoToPlay: URL?
+    @Binding var selectedCategories: Set<Int>
+    @Binding var selectedResolutions: Set<String>
+    @Binding var showFilters: Bool
+    
     @State private var localVideoFiles: [URL] = []
+    @State private var filteredVideoFiles: [URL] = []
     @State private var isGridView = UserDefaults.standard.bool(forKey: "isGridView")
     @State private var thumbnails: [URL: NSImage] = [:]
     @State private var thumbnailSize: Double = UserDefaults.standard.double(forKey: "thumbnailSize") == 0 ? 150 : UserDefaults.standard.double(forKey: "thumbnailSize")
+    @State private var videoResolutions: [URL: String] = [:]
+    @StateObject private var categoryManager = CategoryManager.shared
     
     let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
     
@@ -416,6 +800,18 @@ struct VideoListView: View {
                 Text(getDisplayName(for: directoryURL))
                     .font(.title2)
                 Spacer()
+                
+                // Filter toggle button
+                Button(action: { 
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showFilters.toggle()
+                    }
+                }) {
+                    Image(systemName: "line.horizontal.3.decrease.circle")
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+                .help(showFilters ? "Hide Filters" : "Show Filters")
                 
                 // View toggle button
                 Button(action: { 
@@ -454,18 +850,35 @@ struct VideoListView: View {
                 .padding(.bottom, 8)
             }
             
-            if localVideoFiles.isEmpty {
+            if filteredVideoFiles.isEmpty {
                 Spacer()
-                Text("No video files in this directory")
-                    .foregroundColor(.secondary)
+                if localVideoFiles.isEmpty {
+                    Text("No video files in this directory")
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity)
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "line.horizontal.3.decrease.circle")
+                            .font(.system(size: 40))
+                            .foregroundColor(.secondary)
+                        Text("No videos match the selected filters")
+                            .foregroundColor(.secondary)
+                        Button("Clear Filters") {
+                            selectedCategories.removeAll()
+                            selectedResolutions.removeAll()
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.accentColor)
+                    }
                     .frame(maxWidth: .infinity)
+                }
                 Spacer()
             } else {
                 if isGridView {
                     // Grid view
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: thumbnailSize, maximum: thumbnailSize + 50))], spacing: 20) {
-                            ForEach(localVideoFiles, id: \.self) { videoURL in
+                            ForEach(filteredVideoFiles, id: \.self) { videoURL in
                                 VideoGridItem(videoURL: videoURL, thumbnail: thumbnails[videoURL], size: thumbnailSize)
                                     .onTapGesture(count: 2) {
                                         videoToPlay = videoURL
@@ -476,26 +889,12 @@ struct VideoListView: View {
                     }
                 } else {
                     // List view
-                    List(localVideoFiles, id: \.self) { videoURL in
-                        HStack {
-                            if let thumbnail = thumbnails[videoURL] {
-                                Image(nsImage: thumbnail)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
-                                    .frame(width: 60, height: 34)
-                                    .cornerRadius(4)
-                            } else {
-                                Image(systemName: "film")
-                                    .foregroundColor(.blue)
-                                    .frame(width: 60, height: 34)
+                    List(filteredVideoFiles, id: \.self) { videoURL in
+                        VideoListRow(videoURL: videoURL, thumbnail: thumbnails[videoURL])
+                            .contentShape(Rectangle())
+                            .onTapGesture(count: 2) {
+                                videoToPlay = videoURL
                             }
-                            Text(videoURL.lastPathComponent)
-                            Spacer()
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) {
-                            videoToPlay = videoURL
-                        }
                     }
                 }
             }
@@ -503,19 +902,59 @@ struct VideoListView: View {
         .onAppear {
             loadVideoFiles()
             loadThumbnails()
+            applyFilters()
         }
         .onChange(of: directoryURL) { _, _ in
             loadVideoFiles()
             loadThumbnails()
+            applyFilters()
+        }
+        .onChange(of: selectedCategories) { _, _ in
+            applyFilters()
+        }
+        .onChange(of: selectedResolutions) { _, _ in
+            applyFilters()
         }
         .onReceive(NotificationCenter.default.publisher(for: .refreshThumbnails)) { _ in
             loadThumbnails()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("videoResolutionsUpdated"))) { notification in
+            if let resolutions = notification.userInfo?["resolutions"] as? [URL: String] {
+                videoResolutions = resolutions
+                applyFilters()
+            }
         }
     }
     
     private func loadVideoFiles() {
         localVideoFiles = getVideoFiles()
         videoFiles = localVideoFiles
+    }
+    
+    private func applyFilters() {
+        // Start with all video files
+        var filtered = localVideoFiles
+        
+        // Filter by categories
+        if !selectedCategories.isEmpty {
+            filtered = filtered.filter { videoURL in
+                let videoCategories = categoryManager.getCategoriesForVideo(videoPath: videoURL.path)
+                // Check if video has any of the selected categories
+                return !selectedCategories.isDisjoint(with: videoCategories)
+            }
+        }
+        
+        // Filter by resolution
+        if !selectedResolutions.isEmpty {
+            filtered = filtered.filter { videoURL in
+                if let resolution = videoResolutions[videoURL] {
+                    return selectedResolutions.contains(resolution)
+                }
+                return false
+            }
+        }
+        
+        filteredVideoFiles = filtered
     }
     
     private func getDisplayName(for url: URL) -> String {
@@ -559,29 +998,99 @@ struct VideoListView: View {
     }
 }
 
+struct VideoListRow: View {
+    let videoURL: URL
+    let thumbnail: NSImage?
+    @StateObject private var categoryManager = CategoryManager.shared
+    @State private var hasCategories: Bool = false
+    
+    var body: some View {
+        HStack {
+            ZStack(alignment: .bottomTrailing) {
+                if let thumbnail = thumbnail {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 60, height: 34)
+                        .cornerRadius(4)
+                } else {
+                    Image(systemName: "film")
+                        .foregroundColor(.blue)
+                        .frame(width: 60, height: 34)
+                }
+                
+                // Green checkmark if video has categories
+                if hasCategories {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 16, height: 16)
+                        .overlay(
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.white)
+                                .font(.system(size: 8, weight: .bold))
+                        )
+                        .offset(x: 5, y: 5)
+                }
+            }
+            
+            Text(videoURL.lastPathComponent)
+            Spacer()
+        }
+        .onAppear {
+            checkCategories()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("categoriesUpdated"))) { _ in
+            checkCategories()
+        }
+    }
+    
+    private func checkCategories() {
+        // Check if this video has any categories assigned
+        let categories = categoryManager.getCategoriesForVideo(videoPath: videoURL.path)
+        hasCategories = !categories.isEmpty
+    }
+}
+
 struct VideoGridItem: View {
     let videoURL: URL
     let thumbnail: NSImage?
     let size: Double
+    @StateObject private var categoryManager = CategoryManager.shared
+    @State private var hasCategories: Bool = false
     
     var body: some View {
         VStack(spacing: 8) {
-            if let thumbnail = thumbnail {
-                Image(nsImage: thumbnail)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(height: size * 0.75) // Maintain 16:9 aspect ratio approximately
-                    .cornerRadius(8)
-                    .shadow(radius: 2)
-            } else {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.gray.opacity(0.2))
-                    .frame(height: size * 0.75)
-                    .overlay(
-                        Image(systemName: "film")
-                            .font(.system(size: size * 0.25))
-                            .foregroundColor(.gray)
-                    )
+            ZStack(alignment: .bottomTrailing) {
+                if let thumbnail = thumbnail {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(height: size * 0.75) // Maintain 16:9 aspect ratio approximately
+                        .cornerRadius(8)
+                        .shadow(radius: 2)
+                } else {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.gray.opacity(0.2))
+                        .frame(height: size * 0.75)
+                        .overlay(
+                            Image(systemName: "film")
+                                .font(.system(size: size * 0.25))
+                                .foregroundColor(.gray)
+                        )
+                }
+                
+                // Green checkmark if video has categories
+                if hasCategories {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 24, height: 24)
+                        .overlay(
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.white)
+                                .font(.system(size: 12, weight: .bold))
+                        )
+                        .padding(8)
+                }
             }
             
             Text(videoURL.lastPathComponent)
@@ -593,6 +1102,18 @@ struct VideoGridItem: View {
         .padding(8)
         .background(Color.gray.opacity(0.1))
         .cornerRadius(10)
+        .onAppear {
+            checkCategories()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("categoriesUpdated"))) { _ in
+            checkCategories()
+        }
+    }
+    
+    private func checkCategories() {
+        // Check if this video has any categories assigned
+        let categories = categoryManager.getCategoriesForVideo(videoPath: videoURL.path)
+        hasCategories = !categories.isEmpty
     }
 }
 
@@ -826,6 +1347,11 @@ struct VideoPlayerContent: View {
                                                 videoPath: videoURL.path,
                                                 categoryId: category.id,
                                                 isSelected: isSelected
+                                            )
+                                            // Notify views to update checkmarks
+                                            NotificationCenter.default.post(
+                                                name: Notification.Name("categoriesUpdated"),
+                                                object: nil
                                             )
                                         }
                                     )) {
