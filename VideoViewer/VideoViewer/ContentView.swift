@@ -846,6 +846,12 @@ struct VideoListView: View {
     @State private var showingCleanupPreview = false
     @State private var editingVideo: URL?
     @State private var editingText: String = ""
+    @State private var showingScreenshotProgress = false
+    @State private var isGeneratingScreenshots = false
+    @State private var screenshotProgress = 0
+    @State private var screenshotTotal = 0
+    @State private var currentScreenshotFile: String = ""
+    @State private var screenshotTask: Task<Void, Never>?
     
     let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
     
@@ -877,6 +883,18 @@ struct VideoListView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Grant Folder Access")
+                
+                // Screenshot generation button
+                Button(action: {
+                    generateScreenshots()
+                }) {
+                    Image(systemName: "photo")
+                        .font(.title3)
+                        .foregroundColor(isGeneratingScreenshots ? .secondary : .primary)
+                }
+                .buttonStyle(.plain)
+                .help("Generate Screenshots")
+                .disabled(isGeneratingScreenshots)
                 
                 // Network drive indicator
                 if isNetworkPath(directoryURL) {
@@ -1065,6 +1083,17 @@ struct VideoListView: View {
                     loadVideoFiles()
                     loadThumbnails()
                     applyFilters()
+                }
+            )
+        }
+        .sheet(isPresented: $showingScreenshotProgress) {
+            ScreenshotProgressView(
+                videoFiles: localVideoFiles,
+                directoryURL: directoryURL,
+                isPresented: $showingScreenshotProgress,
+                onComplete: {
+                    // Reload thumbnails after screenshot generation
+                    loadThumbnails()
                 }
             )
         }
@@ -1468,6 +1497,10 @@ struct VideoListView: View {
         } catch {
             print("Failed to save bookmark: \(error)")
         }
+    }
+    
+    private func generateScreenshots() {
+        showingScreenshotProgress = true
     }
 }
 
