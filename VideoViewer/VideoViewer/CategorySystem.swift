@@ -279,6 +279,26 @@ class CategoryManager: ObservableObject {
         sqlite3_finalize(statement)
         return videoPaths
     }
+    
+    func updateVideoPath(from oldPath: String, to newPath: String) {
+        let updateString = "UPDATE video_categories SET video_path = ? WHERE video_path = ?"
+        var statement: OpaquePointer?
+        
+        if sqlite3_prepare_v2(db, updateString, -1, &statement, nil) == SQLITE_OK {
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            sqlite3_bind_text(statement, 1, newPath, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(statement, 2, oldPath, -1, SQLITE_TRANSIENT)
+            
+            if sqlite3_step(statement) == SQLITE_DONE {
+                print("Successfully updated video path from '\(oldPath)' to '\(newPath)'")
+            } else {
+                let errorMessage = String(cString: sqlite3_errmsg(db))
+                print("Failed to update video path: \(errorMessage)")
+            }
+        }
+        
+        sqlite3_finalize(statement)
+    }
 }
 
 // MARK: - CategoriesView

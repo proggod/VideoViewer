@@ -802,6 +802,8 @@ struct VideoListView: View {
     @State private var showingDeleteAlert = false
     @State private var videoToDelete: URL?
     @State private var showingCleanupPreview = false
+    @State private var editingVideo: URL?
+    @State private var editingText: String = ""
     
     let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
     
@@ -811,7 +813,34 @@ struct VideoListView: View {
             HStack {
                 Text(getDisplayName(for: directoryURL))
                     .font(.title2)
+                
+                // Network drive indicator
+                if isNetworkPath(directoryURL) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "network")
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                        Text("Network Drive")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(6)
+                }
+                
                 Spacer()
+                
+                // Refresh button
+                Button(action: { 
+                    refreshDirectory()
+                }) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+                .help("Refresh Directory")
                 
                 // Cleanup button
                 Button(action: { 
@@ -901,17 +930,26 @@ struct VideoListView: View {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: thumbnailSize, maximum: thumbnailSize + 50))], spacing: 20) {
                             ForEach(filteredVideoFiles, id: \.self) { videoURL in
-                                VideoGridItem(videoURL: videoURL, thumbnail: thumbnails[videoURL], size: thumbnailSize)
-                                    .onTapGesture(count: 2) {
+                                VideoGridItem(
+                                    videoURL: videoURL,
+                                    thumbnail: thumbnails[videoURL],
+                                    size: thumbnailSize,
+                                    editingVideo: $editingVideo,
+                                    editingText: $editingText,
+                                    onRename: renameVideo
+                                )
+                                .onTapGesture(count: 2) {
+                                    if editingVideo == nil {
                                         videoToPlay = videoURL
                                     }
-                                    .contextMenu {
-                                        Button(action: {
-                                            showDeleteConfirmation(for: videoURL)
-                                        }) {
-                                            Label("Delete", systemImage: "trash")
-                                        }
+                                }
+                                .contextMenu {
+                                    Button(action: {
+                                        showDeleteConfirmation(for: videoURL)
+                                    }) {
+                                        Label("Delete", systemImage: "trash")
                                     }
+                                }
                             }
                         }
                         .padding()
@@ -919,18 +957,26 @@ struct VideoListView: View {
                 } else {
                     // List view
                     List(filteredVideoFiles, id: \.self) { videoURL in
-                        VideoListRow(videoURL: videoURL, thumbnail: thumbnails[videoURL])
-                            .contentShape(Rectangle())
-                            .onTapGesture(count: 2) {
+                        VideoListRow(
+                            videoURL: videoURL,
+                            thumbnail: thumbnails[videoURL],
+                            editingVideo: $editingVideo,
+                            editingText: $editingText,
+                            onRename: renameVideo
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) {
+                            if editingVideo == nil {
                                 videoToPlay = videoURL
                             }
-                            .contextMenu {
-                                Button(action: {
-                                    showDeleteConfirmation(for: videoURL)
-                                }) {
-                                    Label("Delete", systemImage: "trash")
-                                }
+                        }
+                        .contextMenu {
+                            Button(action: {
+                                showDeleteConfirmation(for: videoURL)
+                            }) {
+                                Label("Delete", systemImage: "trash")
                             }
+                        }
                     }
                 }
             }
@@ -1050,13 +1096,140 @@ struct VideoListView: View {
         let videoInfoURL = directoryURL.appendingPathComponent(".video_info")
         guard FileManager.default.fileExists(atPath: videoInfoURL.path) else { return }
         
+        // Check if this is a network drive
+        let isNetworkDrive = isNetworkPath(directoryURL)
+        
+        if isNetworkDrive {
+            print("Loading thumbnails from network drive: \(directoryURL.path)")
+        }
+        
+        var cachedCount = 0
+        var networkLoadCount = 0
+        
         for videoURL in localVideoFiles {
             let videoName = videoURL.deletingPathExtension().lastPathComponent.lowercased()
             let thumbnailURL = videoInfoURL.appendingPathComponent("\(videoName).png")
             
-            if FileManager.default.fileExists(atPath: thumbnailURL.path),
-               let image = NSImage(contentsOf: thumbnailURL) {
-                thumbnails[videoURL] = image
+            if isNetworkDrive {
+                // For network drives, try to load from local cache first
+                if let cachedImage = loadCachedThumbnail(for: videoURL) {
+                    thumbnails[videoURL] = cachedImage
+                    cachedCount += 1
+                } else if FileManager.default.fileExists(atPath: thumbnailURL.path),
+                          let image = NSImage(contentsOf: thumbnailURL) {
+                    // Load from network and cache locally
+                    thumbnails[videoURL] = image
+                    cacheThumbnail(image, for: videoURL)
+                    networkLoadCount += 1
+                }
+            } else {
+                // For local drives, load directly
+                if FileManager.default.fileExists(atPath: thumbnailURL.path),
+                   let image = NSImage(contentsOf: thumbnailURL) {
+                    thumbnails[videoURL] = image
+                }
+            }
+        }
+        
+        if isNetworkDrive && (cachedCount > 0 || networkLoadCount > 0) {
+            print("Network drive thumbnails - Cached: \(cachedCount), Loaded from network: \(networkLoadCount)")
+        }
+    }
+    
+    private func isNetworkPath(_ url: URL) -> Bool {
+        // Check if the path is a network mount
+        if url.path.hasPrefix("/Volumes/") {
+            // On macOS, network drives are typically mounted under /Volumes/
+            // Check if it's not a local disk
+            do {
+                let resourceValues = try url.resourceValues(forKeys: [.volumeURLForRemountingKey, .volumeIsLocalKey])
+                
+                // Log the detection results
+                print("Checking path: \(url.path)")
+                print("  - volumeIsLocal: \(resourceValues.volumeIsLocal ?? false)")
+                print("  - volumeURLForRemounting: \(resourceValues.volumeURLForRemounting?.absoluteString ?? "none")")
+                
+                // If volumeIsLocalKey is false, it's a network drive
+                if let isLocal = resourceValues.volumeIsLocal {
+                    let isNetwork = !isLocal
+                    print("  - Detected as: \(isNetwork ? "Network Drive" : "Local Drive")")
+                    return isNetwork
+                }
+                
+                // Alternative check: if it has a remounting URL, it's likely network
+                if resourceValues.volumeURLForRemounting != nil {
+                    print("  - Detected as: Network Drive (has remounting URL)")
+                    return true
+                }
+            } catch {
+                print("Error checking if path is network: \(error)")
+            }
+        }
+        
+        // Check for common network path patterns
+        let isNetwork = url.path.hasPrefix("/Volumes/") && 
+                       !url.path.hasPrefix("/Volumes/Macintosh")
+        
+        if isNetwork {
+            print("Path \(url.path) detected as network drive by pattern matching")
+        }
+        
+        return isNetwork
+    }
+    
+    private func getCacheDirectory() -> URL? {
+        let fileManager = FileManager.default
+        guard let cacheDir = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        
+        let appCacheDir = cacheDir.appendingPathComponent("VideoViewer/thumbnails")
+        
+        // Create directory if it doesn't exist
+        if !fileManager.fileExists(atPath: appCacheDir.path) {
+            try? fileManager.createDirectory(at: appCacheDir, withIntermediateDirectories: true)
+        }
+        
+        return appCacheDir
+    }
+    
+    private func getCachedThumbnailURL(for videoURL: URL) -> URL? {
+        guard let cacheDir = getCacheDirectory() else { return nil }
+        
+        // Create a unique filename based on the full path
+        let pathHash = videoURL.path.data(using: .utf8)?.base64EncodedString() ?? ""
+        let safeHash = pathHash.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+        
+        return cacheDir.appendingPathComponent("\(safeHash).png")
+    }
+    
+    private func loadCachedThumbnail(for videoURL: URL) -> NSImage? {
+        guard let cachedURL = getCachedThumbnailURL(for: videoURL) else { return nil }
+        
+        if FileManager.default.fileExists(atPath: cachedURL.path) {
+            // Check if cache is still valid (e.g., not older than 7 days)
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: cachedURL.path),
+               let modificationDate = attributes[.modificationDate] as? Date {
+                let age = Date().timeIntervalSince(modificationDate)
+                if age < 7 * 24 * 60 * 60 { // 7 days
+                    return NSImage(contentsOf: cachedURL)
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    private func cacheThumbnail(_ image: NSImage, for videoURL: URL) {
+        guard let cachedURL = getCachedThumbnailURL(for: videoURL) else { return }
+        
+        // Save thumbnail to cache in background
+        DispatchQueue.global(qos: .background).async {
+            if let tiffData = image.tiffRepresentation,
+               let bitmapRep = NSBitmapImageRep(data: tiffData),
+               let pngData = bitmapRep.representation(using: .png, properties: [:]) {
+                try? pngData.write(to: cachedURL)
             }
         }
     }
@@ -1098,11 +1271,84 @@ struct VideoListView: View {
             // Could show an error alert here if needed
         }
     }
+    
+    private func renameVideo(_ videoURL: URL, _ newName: String) {
+        // Validate the new name
+        let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        
+        // Create new URL with the same extension
+        let newURL = videoURL.deletingLastPathComponent()
+            .appendingPathComponent(trimmedName)
+            .appendingPathExtension(videoURL.pathExtension)
+        
+        // Check if destination already exists
+        if FileManager.default.fileExists(atPath: newURL.path) && newURL != videoURL {
+            print("File with name '\(newURL.lastPathComponent)' already exists")
+            // Could show an alert here
+            return
+        }
+        
+        do {
+            // Rename the video file
+            try FileManager.default.moveItem(at: videoURL, to: newURL)
+            
+            // Rename thumbnail if it exists
+            let videoInfoURL = directoryURL.appendingPathComponent(".video_info")
+            let oldThumbName = videoURL.deletingPathExtension().lastPathComponent.lowercased()
+            let newThumbName = newURL.deletingPathExtension().lastPathComponent.lowercased()
+            
+            let oldThumbURL = videoInfoURL.appendingPathComponent("\(oldThumbName).png")
+            let newThumbURL = videoInfoURL.appendingPathComponent("\(newThumbName).png")
+            
+            if FileManager.default.fileExists(atPath: oldThumbURL.path) {
+                try? FileManager.default.moveItem(at: oldThumbURL, to: newThumbURL)
+            }
+            
+            // Update category associations in database
+            categoryManager.updateVideoPath(from: videoURL.path, to: newURL.path)
+            
+            // Clear resolution cache for the directory
+            ResolutionCache.shared.clearCache(for: directoryURL.path)
+            
+            // Reload files and update UI
+            loadVideoFiles()
+            loadThumbnails()
+            applyFilters()
+            
+            print("Successfully renamed '\(videoURL.lastPathComponent)' to '\(newURL.lastPathComponent)'")
+        } catch {
+            print("Error renaming video: \(error)")
+            // Could show an error alert here
+        }
+    }
+    
+    private func refreshDirectory() {
+        // Clear any editing state
+        editingVideo = nil
+        editingText = ""
+        
+        // Clear resolution cache to force re-scanning
+        ResolutionCache.shared.clearCache(for: directoryURL.path)
+        
+        // Reload all data
+        loadVideoFiles()
+        loadThumbnails()
+        applyFilters()
+        
+        // The resolution loading will happen automatically via the existing
+        // ResolutionCache mechanism when the view refreshes
+        
+        print("Directory refreshed: \(directoryURL.path)")
+    }
 }
 
 struct VideoListRow: View {
     let videoURL: URL
     let thumbnail: NSImage?
+    @Binding var editingVideo: URL?
+    @Binding var editingText: String
+    let onRename: (URL, String) -> Void
     @StateObject private var categoryManager = CategoryManager.shared
     @State private var hasCategories: Bool = false
     
@@ -1135,7 +1381,33 @@ struct VideoListRow: View {
                 }
             }
             
-            Text(videoURL.lastPathComponent)
+            if editingVideo == videoURL {
+                // Edit mode
+                TextField("Filename", text: $editingText, onCommit: {
+                    if !editingText.isEmpty {
+                        onRename(videoURL, editingText)
+                    }
+                    editingVideo = nil
+                })
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .onAppear {
+                    // Focus the text field when it appears
+                    DispatchQueue.main.async {
+                        NSApp.keyWindow?.makeFirstResponder(nil)
+                    }
+                }
+                
+                Text(".\(videoURL.pathExtension)")
+                    .foregroundColor(.secondary)
+            } else {
+                // Display mode
+                Text(videoURL.lastPathComponent)
+                    .onTapGesture {
+                        editingVideo = videoURL
+                        editingText = videoURL.deletingPathExtension().lastPathComponent
+                    }
+            }
+            
             Spacer()
         }
         .onAppear {
@@ -1157,6 +1429,9 @@ struct VideoGridItem: View {
     let videoURL: URL
     let thumbnail: NSImage?
     let size: Double
+    @Binding var editingVideo: URL?
+    @Binding var editingText: String
+    let onRename: (URL, String) -> Void
     @StateObject private var categoryManager = CategoryManager.shared
     @State private var hasCategories: Bool = false
     
@@ -1195,11 +1470,35 @@ struct VideoGridItem: View {
                 }
             }
             
-            Text(videoURL.lastPathComponent)
-                .font(.system(size: min(12, size * 0.08)))
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
+            if editingVideo == videoURL {
+                // Edit mode
+                HStack(spacing: 2) {
+                    TextField("Filename", text: $editingText, onCommit: {
+                        if !editingText.isEmpty {
+                            onRename(videoURL, editingText)
+                        }
+                        editingVideo = nil
+                    })
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .font(.system(size: min(12, size * 0.08)))
+                    
+                    Text(".\(videoURL.pathExtension)")
+                        .font(.system(size: min(12, size * 0.08)))
+                        .foregroundColor(.secondary)
+                }
                 .frame(maxWidth: .infinity)
+            } else {
+                // Display mode
+                Text(videoURL.lastPathComponent)
+                    .font(.system(size: min(12, size * 0.08)))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .onTapGesture {
+                        editingVideo = videoURL
+                        editingText = videoURL.deletingPathExtension().lastPathComponent
+                    }
+            }
         }
         .padding(8)
         .background(Color.gray.opacity(0.1))
@@ -1235,11 +1534,49 @@ class VideoWindowController: NSWindowController, NSWindowDelegate {
            frame.width > 0 && frame.height > 0 {
             // Ensure the saved frame is still visible on current screen configuration
             let screens = NSScreen.screens
-            let screenFrames = screens.map { $0.frame }
-            let isVisible = screenFrames.contains { screenFrame in
-                screenFrame.intersects(frame)
+            
+            // Find the screen that contains the window or use main screen
+            let targetScreen = screens.first { screen in
+                screen.frame.intersects(frame)
+            } ?? NSScreen.main ?? screens.first
+            
+            if let screen = targetScreen {
+                let screenFrame = screen.visibleFrame // Use visibleFrame to account for menu bar and dock
+                
+                // Constrain the window size to fit within the screen
+                var constrainedFrame = frame
+                
+                // Ensure window doesn't exceed screen height (leave some margin)
+                let maxHeight = screenFrame.height - 50 // Leave 50pt margin
+                if constrainedFrame.height > maxHeight {
+                    constrainedFrame.size.height = maxHeight
+                }
+                
+                // Ensure window doesn't exceed screen width
+                let maxWidth = screenFrame.width - 50
+                if constrainedFrame.width > maxWidth {
+                    constrainedFrame.size.width = maxWidth
+                }
+                
+                // Ensure window is positioned within screen bounds
+                if constrainedFrame.minX < screenFrame.minX {
+                    constrainedFrame.origin.x = screenFrame.minX + 20
+                }
+                if constrainedFrame.minY < screenFrame.minY {
+                    constrainedFrame.origin.y = screenFrame.minY + 20
+                }
+                if constrainedFrame.maxX > screenFrame.maxX {
+                    constrainedFrame.origin.x = screenFrame.maxX - constrainedFrame.width - 20
+                }
+                if constrainedFrame.maxY > screenFrame.maxY {
+                    constrainedFrame.origin.y = screenFrame.maxY - constrainedFrame.height - 20
+                }
+                
+                windowRect = constrainedFrame
+                print("Window frame constrained - Original: \(frame), Constrained: \(constrainedFrame), Screen: \(screenFrame)")
+            } else {
+                windowRect = defaultRect
             }
-            windowRect = isVisible ? frame : defaultRect
         } else {
             windowRect = defaultRect
         }
@@ -1521,6 +1858,16 @@ struct VideoPlayerContent: View {
                         }) {
                             Image(systemName: showCategories ? "tag.fill" : "tag")
                                 .foregroundColor(.white)
+                                .font(.system(size: 28))
+                                .frame(width: 60, height: 60)
+                                .background(
+                                    Circle()
+                                        .fill(Color.white.opacity(0.2))
+                                        .overlay(
+                                            Circle()
+                                                .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                                        )
+                                )
                         }
                         .buttonStyle(.plain)
                         .help(showCategories ? "Hide Categories" : "Show Categories")
