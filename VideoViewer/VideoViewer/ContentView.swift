@@ -110,6 +110,9 @@ struct ContentView: View {
             }
         }
         .onChange(of: videoToPlay) { oldValue, newValue in
+            print("=== onChange videoToPlay ===")
+            print("Old: \(oldValue?.lastPathComponent ?? "nil") -> New: \(newValue?.lastPathComponent ?? "nil")")
+            
             if newValue != nil {
                 // Reset state to allow reopening same video
                 showingVideoPlayer = false
@@ -122,7 +125,7 @@ struct ContentView: View {
             // Hidden window opener
             Group {
                 if showingVideoPlayer, let videoURL = videoToPlay {
-                    WindowOpener(videoURL: videoURL, isPresented: $showingVideoPlayer)
+                    WindowOpener(videoURL: videoURL, isPresented: $showingVideoPlayer, videoToPlay: $videoToPlay)
                 }
             }
         )
@@ -563,6 +566,7 @@ struct VideoGridItem: View {
 // Window controller to properly manage window lifecycle
 class VideoWindowController: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
+    let id = UUID()
     
     convenience init(videoURL: URL, onClose: @escaping () -> Void) {
         let window = NSWindow(
@@ -582,15 +586,26 @@ class VideoWindowController: NSWindowController, NSWindowDelegate {
     }
     
     func windowWillClose(_ notification: Notification) {
+        print("=== VideoWindowController windowWillClose ===")
+        
+        // Force clear the content view to trigger cleanup
+        window?.contentView = nil
+        
         onClose?()
+        print("Window close complete")
     }
 }
+
+// Keep window controllers alive
+private var activeWindowControllers = [VideoWindowController]()
 
 struct WindowOpener: NSViewRepresentable {
     let videoURL: URL
     @Binding var isPresented: Bool
+    @Binding var videoToPlay: URL?
     
     func makeNSView(context: Context) -> NSView {
+        print("=== WindowOpener makeNSView for \(videoURL.lastPathComponent) ===")
         let view = NSView()
         DispatchQueue.main.async {
             self.openVideoWindow()
@@ -601,10 +616,28 @@ struct WindowOpener: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
     
     private func openVideoWindow() {
+        print("=== Opening window for \(videoURL.lastPathComponent) ===")
+        
+        var windowController: VideoWindowController?
+        
         let controller = VideoWindowController(videoURL: videoURL) { [self] in
+            print("=== Window closed, resetting state ===")
             self.isPresented = false
+            self.videoToPlay = nil  // This is the key - reset to nil so we can reopen
+            
+            // Also remove from active controllers using the stored reference
+            if let wc = windowController {
+                activeWindowControllers.removeAll { $0.id == wc.id }
+            }
         }
+        
+        windowController = controller
+        
+        // Keep controller alive
+        activeWindowControllers.append(controller)
+        
         controller.showWindow(nil)
+        print("Window shown, controller count: \(activeWindowControllers.count)")
     }
 }
 
@@ -665,7 +698,12 @@ struct VideoPlayerContent: View {
                     player.play()
                     
                     // Start a timer to periodically check volume and mute state
-                    volumeCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+                    volumeCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                        guard let self = self else { 
+                            print("Timer fired but self is nil - stopping timer")
+                            return 
+                        }
+                        
                         let currentVolume = player.volume
                         let currentMuted = player.isMuted
                         
@@ -678,17 +716,28 @@ struct VideoPlayerContent: View {
                     }
                 }
                 .onDisappear {
-                    // Stop timer
+                    print("=== VideoPlayer onDisappear START ===")
+                    
+                    // Stop timer immediately
                     volumeCheckTimer?.invalidate()
                     volumeCheckTimer = nil
+                    print("Timer invalidated")
                     
                     // Save current state before closing
                     playerObserver.saveCurrentState(volume: player.volume, isMuted: player.isMuted)
                     print("Final volume: \(player.volume), muted: \(player.isMuted)")
                     
-                    // Clean shutdown
+                    // Force stop playback
+                    print("Stopping playback...")
                     player.pause()
+                    player.seek(to: .zero)
+                    player.rate = 0
                     player.replaceCurrentItem(with: nil)
+                    
+                    // Clear all player references
+                    print("Clearing player references")
+                    
+                    print("=== VideoPlayer onDisappear END ===")
                 }
             
             // Bottom toolbar
