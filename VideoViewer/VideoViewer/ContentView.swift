@@ -609,6 +609,8 @@ struct FilterSidebar: View {
         
         // First, load from cache
         let directoryPath = directoryURL.path
+        var hasCachedData = false
+        
         if let cachedResolutions = ResolutionCache.shared.getResolutions(for: directoryPath) {
             var newResolutions: Set<String> = []
             var newVideoResolutions: [URL: String] = [:]
@@ -619,15 +621,20 @@ struct FilterSidebar: View {
                 newResolutions.insert(resolution)
             }
             
-            self.availableResolutions = newResolutions
-            self.videoResolutions = newVideoResolutions
-            
-            // Notify immediately with cached data
-            NotificationCenter.default.post(
-                name: Notification.Name("videoResolutionsUpdated"),
-                object: nil,
-                userInfo: ["resolutions": newVideoResolutions]
-            )
+            if !newResolutions.isEmpty {
+                hasCachedData = true
+                self.availableResolutions = newResolutions
+                self.videoResolutions = newVideoResolutions
+                
+                // Notify immediately with cached data
+                NotificationCenter.default.post(
+                    name: Notification.Name("videoResolutionsUpdated"),
+                    object: nil,
+                    userInfo: ["resolutions": newVideoResolutions]
+                )
+                
+                print("Loaded \(newVideoResolutions.count) resolutions from cache for \(directoryPath)")
+            }
         }
         
         // Then load any missing resolutions asynchronously
@@ -645,21 +652,56 @@ struct FilterSidebar: View {
                 var newResolutions: Set<String> = []
                 var newVideoResolutions: [URL: String] = [:]
                 
-                // Get resolution for each video file
+                // First pass: collect all cached resolutions immediately
+                var uncachedFiles: [URL] = []
                 for videoFile in videoFiles {
                     let videoPath = videoFile.path
                     
-                    // Check cache first
                     if let cachedResolution = ResolutionCache.shared.getResolution(for: videoPath, in: directoryPath) {
                         newVideoResolutions[videoFile] = cachedResolution
                         newResolutions.insert(cachedResolution)
                     } else {
-                        // Not in cache, load it
-                        if let resolution = await getVideoResolutionAsync(for: videoFile) {
-                            newVideoResolutions[videoFile] = resolution
-                            newResolutions.insert(resolution)
-                            // Cache the result
-                            ResolutionCache.shared.setResolution(resolution, for: videoPath, in: directoryPath)
+                        uncachedFiles.append(videoFile)
+                    }
+                }
+                
+                // Update UI with cached data immediately
+                if !newResolutions.isEmpty {
+                    await MainActor.run {
+                        self.availableResolutions = newResolutions
+                        self.videoResolutions = newVideoResolutions
+                    }
+                }
+                
+                // Second pass: load uncached files in parallel (limit concurrency)
+                if !uncachedFiles.isEmpty {
+                    // Process in batches of 5 to avoid overwhelming the system
+                    for i in stride(from: 0, to: uncachedFiles.count, by: 5) {
+                        let batch = Array(uncachedFiles[i..<min(i + 5, uncachedFiles.count)])
+                        
+                        await withTaskGroup(of: (URL, String?).self) { group in
+                            for videoFile in batch {
+                                group.addTask {
+                                    let resolution = await self.getVideoResolutionAsync(for: videoFile)
+                                    return (videoFile, resolution)
+                                }
+                            }
+                            
+                            // Update UI immediately as each file completes
+                            for await (videoFile, resolution) in group {
+                                if let resolution = resolution {
+                                    newVideoResolutions[videoFile] = resolution
+                                    newResolutions.insert(resolution)
+                                    // Cache the result
+                                    ResolutionCache.shared.setResolution(resolution, for: videoFile.path, in: directoryPath)
+                                    
+                                    // Update UI immediately after each file
+                                    await MainActor.run {
+                                        self.availableResolutions = newResolutions
+                                        self.videoResolutions = newVideoResolutions
+                                    }
+                                }
+                            }
                         }
                     }
                 }
