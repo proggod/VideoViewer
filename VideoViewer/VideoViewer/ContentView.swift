@@ -77,6 +77,7 @@ class FileItem: ObservableObject, Identifiable {
 enum NavigationTab {
     case videos
     case categories
+    case cleanup
 }
 
 struct ContentView: View {
@@ -102,6 +103,12 @@ struct ContentView: View {
                 Button(action: { currentTab = .categories }) {
                     Label("Categories", systemImage: "tag")
                         .foregroundColor(currentTab == .categories ? .accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+                
+                Button(action: { currentTab = .cleanup }) {
+                    Label("Cleanup", systemImage: "wand.and.stars")
+                        .foregroundColor(currentTab == .cleanup ? .accentColor : .secondary)
                 }
                 .buttonStyle(.plain)
                 
@@ -160,8 +167,10 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
-            } else {
+            } else if currentTab == .categories {
                 CategoriesView()
+            } else {
+                CleanupView()
             }
         }
         .frame(minWidth: 800, minHeight: 600)
@@ -790,6 +799,9 @@ struct VideoListView: View {
     @State private var thumbnailSize: Double = UserDefaults.standard.double(forKey: "thumbnailSize") == 0 ? 150 : UserDefaults.standard.double(forKey: "thumbnailSize")
     @State private var videoResolutions: [URL: String] = [:]
     @StateObject private var categoryManager = CategoryManager.shared
+    @State private var showingDeleteAlert = false
+    @State private var videoToDelete: URL?
+    @State private var showingCleanupPreview = false
     
     let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
     
@@ -800,6 +812,16 @@ struct VideoListView: View {
                 Text(getDisplayName(for: directoryURL))
                     .font(.title2)
                 Spacer()
+                
+                // Cleanup button
+                Button(action: { 
+                    showingCleanupPreview = true
+                }) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+                .help("Cleanup Filenames")
                 
                 // Filter toggle button
                 Button(action: { 
@@ -883,6 +905,13 @@ struct VideoListView: View {
                                     .onTapGesture(count: 2) {
                                         videoToPlay = videoURL
                                     }
+                                    .contextMenu {
+                                        Button(action: {
+                                            showDeleteConfirmation(for: videoURL)
+                                        }) {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
                             }
                         }
                         .padding()
@@ -895,9 +924,39 @@ struct VideoListView: View {
                             .onTapGesture(count: 2) {
                                 videoToPlay = videoURL
                             }
+                            .contextMenu {
+                                Button(action: {
+                                    showDeleteConfirmation(for: videoURL)
+                                }) {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
                     }
                 }
             }
+        }
+        .alert("Delete Video", isPresented: $showingDeleteAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                if let video = videoToDelete {
+                    deleteVideo(video)
+                }
+            }
+        } message: {
+            Text("Are you sure you want to delete '\(videoToDelete?.lastPathComponent ?? "")'? This action cannot be undone.")
+        }
+        .sheet(isPresented: $showingCleanupPreview) {
+            CleanupPreviewView(
+                videoFiles: filteredVideoFiles,
+                directoryURL: directoryURL,
+                isPresented: $showingCleanupPreview,
+                onComplete: {
+                    // Reload files after cleanup
+                    loadVideoFiles()
+                    loadThumbnails()
+                    applyFilters()
+                }
+            )
         }
         .onAppear {
             loadVideoFiles()
@@ -923,6 +982,11 @@ struct VideoListView: View {
                 videoResolutions = resolutions
                 applyFilters()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .refreshBrowser)) { _ in
+            loadVideoFiles()
+            loadThumbnails()
+            applyFilters()
         }
     }
     
@@ -994,6 +1058,44 @@ struct VideoListView: View {
                let image = NSImage(contentsOf: thumbnailURL) {
                 thumbnails[videoURL] = image
             }
+        }
+    }
+    
+    private func showDeleteConfirmation(for videoURL: URL) {
+        videoToDelete = videoURL
+        showingDeleteAlert = true
+    }
+    
+    private func deleteVideo(_ videoURL: URL) {
+        do {
+            // Delete the video file
+            try FileManager.default.removeItem(at: videoURL)
+            
+            // Delete thumbnail if it exists
+            let videoInfoURL = directoryURL.appendingPathComponent(".video_info")
+            let videoName = videoURL.deletingPathExtension().lastPathComponent.lowercased()
+            let thumbnailURL = videoInfoURL.appendingPathComponent("\(videoName).png")
+            
+            if FileManager.default.fileExists(atPath: thumbnailURL.path) {
+                try? FileManager.default.removeItem(at: thumbnailURL)
+            }
+            
+            // Remove from database (all category associations)
+            // This happens automatically due to the video path no longer existing
+            
+            // Remove from resolution cache
+            ResolutionCache.shared.clearCache(for: directoryURL.path)
+            
+            // Reload files and update UI
+            loadVideoFiles()
+            loadThumbnails()
+            applyFilters()
+            
+            // Clear the deletion reference
+            videoToDelete = nil
+        } catch {
+            print("Error deleting video: \(error)")
+            // Could show an error alert here if needed
         }
     }
 }
@@ -1123,8 +1225,27 @@ class VideoWindowController: NSWindowController, NSWindowDelegate {
     let id = UUID()
     
     convenience init(videoURL: URL, onClose: @escaping () -> Void) {
+        // Load saved window frame or use defaults
+        let savedFrame = UserDefaults.standard.string(forKey: "videoWindowFrame")
+        let defaultRect = NSRect(x: 100, y: 100, width: 800, height: 600)
+        let windowRect: NSRect
+        
+        if let savedFrame = savedFrame,
+           let frame = NSRectFromString(savedFrame) as NSRect?,
+           frame.width > 0 && frame.height > 0 {
+            // Ensure the saved frame is still visible on current screen configuration
+            let screens = NSScreen.screens
+            let screenFrames = screens.map { $0.frame }
+            let isVisible = screenFrames.contains { screenFrame in
+                screenFrame.intersects(frame)
+            }
+            windowRect = isVisible ? frame : defaultRect
+        } else {
+            windowRect = defaultRect
+        }
+        
         let window = NSWindow(
-            contentRect: NSRect(x: 100, y: 100, width: 800, height: 600),
+            contentRect: windowRect,
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -1142,11 +1263,30 @@ class VideoWindowController: NSWindowController, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         print("=== VideoWindowController windowWillClose ===")
         
+        // Save window frame before closing
+        if let frame = window?.frame {
+            UserDefaults.standard.set(NSStringFromRect(frame), forKey: "videoWindowFrame")
+        }
+        
         // Force clear the content view to trigger cleanup
         window?.contentView = nil
         
         onClose?()
         print("Window close complete")
+    }
+    
+    func windowDidResize(_ notification: Notification) {
+        // Save window frame when resized
+        if let frame = window?.frame {
+            UserDefaults.standard.set(NSStringFromRect(frame), forKey: "videoWindowFrame")
+        }
+    }
+    
+    func windowDidMove(_ notification: Notification) {
+        // Save window frame when moved
+        if let frame = window?.frame {
+            UserDefaults.standard.set(NSStringFromRect(frame), forKey: "videoWindowFrame")
+        }
     }
 }
 
@@ -1404,11 +1544,21 @@ struct VideoPlayerContent: View {
                     }) {
                         Image(systemName: "camera.fill")
                             .foregroundColor(.white)
+                            .font(.system(size: 28))
+                            .frame(width: 60, height: 60)
+                            .background(
+                                Circle()
+                                    .fill(Color.white.opacity(0.2))
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                                    )
+                            )
                             .scaleEffect(isCapturing ? 0.8 : 1.0)
                             .opacity(isCapturing ? 0.6 : 1.0)
                     }
                     .buttonStyle(.plain)
-                    .help("Generate Thumbnail")
+                    .help("Capture Screenshot")
                     .padding()
                 }
                 .background(Color.black.opacity(0.8))

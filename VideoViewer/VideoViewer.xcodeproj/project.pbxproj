@@ -13,6 +13,9 @@
 		1D12345D1234567890ABCDEF /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1D12345C1234567890ABCDEF /* Preview Assets.xcassets */; };
 		1D1234651234567890ABCDEF /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D1234641234567890ABCDEF /* AppDelegate.swift */; };
 		B405A64B022027AD62B06928 /* CategorySystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = F76E539E45EE7215CB3D371B /* CategorySystem.swift */; };
+		DAD0E942B31406E7F4B44C63 /* CleanupManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1981DF0D11F7DBF87D82AD82 /* CleanupManager.swift */; };
+		3C4F5F832B06936FBE499439 /* CleanupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9055C2ABFA03E1D37A069F5 /* CleanupView.swift */; };
+		BA2E6615FB8334936B7482B2 /* CleanupPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1FB6A99500A60C5735E9FEE /* CleanupPreviewView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -23,7 +26,10 @@
 		1D12345C1234567890ABCDEF /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		1D12345E1234567890ABCDEF /* VideoViewer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VideoViewer.entitlements; sourceTree = "<group>"; };
 		1D1234641234567890ABCDEF /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		F76E539E45EE7215CB3D371B /* CategorySystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategorySystem.swift; sourceTree = "<group>"; };
+				1981DF0D11F7DBF87D82AD82 /* CleanupManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupManager.swift; sourceTree = "<group>"; };
+		A9055C2ABFA03E1D37A069F5 /* CleanupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupView.swift; sourceTree = "<group>"; };
+		A1FB6A99500A60C5735E9FEE /* CleanupPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupPreviewView.swift; sourceTree = "<group>"; };
+F76E539E45EE7215CB3D371B /* CategorySystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategorySystem.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -59,6 +65,9 @@
 				1D1234551234567890ABCDEF /* VideoViewerApp.swift */,
 				1D1234571234567890ABCDEF /* ContentView.swift */,
 				F76E539E45EE7215CB3D371B /* CategorySystem.swift */,
+				1981DF0D11F7DBF87D82AD82 /* CleanupManager.swift */,
+				A9055C2ABFA03E1D37A069F5 /* CleanupView.swift */,
+				A1FB6A99500A60C5735E9FEE /* CleanupPreviewView.swift */,
 				1D1234641234567890ABCDEF /* AppDelegate.swift */,
 				1D1234591234567890ABCDEF /* Assets.xcassets */,
 				1D12345E1234567890ABCDEF /* VideoViewer.entitlements */,
@@ -147,6 +156,9 @@
 			files = (
 				1D1234581234567890ABCDEF /* ContentView.swift in Sources */,
 				B405A64B022027AD62B06928 /* CategorySystem.swift in Sources */,
+				DAD0E942B31406E7F4B44C63 /* CleanupManager.swift in Sources */,
+				3C4F5F832B06936FBE499439 /* CleanupView.swift in Sources */,
+				BA2E6615FB8334936B7482B2 /* CleanupPreviewView.swift in Sources */,
 				1D1234561234567890ABCDEF /* VideoViewerApp.swift in Sources */,
 				1D1234651234567890ABCDEF /* AppDelegate.swift in Sources */,
 			);
