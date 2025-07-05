@@ -665,12 +665,29 @@ class PlayerObserver: NSObject, ObservableObject {
     }
 }
 
+// Track active timers for debugging
+private var activeTimerCount = 0
+
+// Wrapper class to track VideoPlayerContent lifecycle
+class VideoPlayerContentTracker: ObservableObject {
+    let id = UUID()
+    
+    init() {
+        print("=== VideoPlayerContentTracker init \(id) ===")
+    }
+    
+    deinit {
+        print("=== VideoPlayerContentTracker deinit \(id) ===")
+    }
+}
+
 struct VideoPlayerContent: View {
     let videoURL: URL
     @State private var player: AVPlayer
     @State private var isCapturing: Bool = false
     @StateObject private var playerObserver = PlayerObserver()
     @State private var volumeCheckTimer: Timer?
+    @StateObject private var tracker = VideoPlayerContentTracker()
     
     init(videoURL: URL) {
         self.videoURL = videoURL
@@ -698,19 +715,17 @@ struct VideoPlayerContent: View {
                     player.play()
                     
                     // Start a timer to periodically check volume and mute state
-                    volumeCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-                        guard let self = self else { 
-                            print("Timer fired but self is nil - stopping timer")
-                            return 
-                        }
-                        
+                    activeTimerCount += 1
+                    print("Starting timer, active count: \(activeTimerCount)")
+                    
+                    volumeCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
                         let currentVolume = player.volume
                         let currentMuted = player.isMuted
                         
                         // Check if volume or mute state changed
                         if currentVolume != UserDefaults.standard.float(forKey: "lastVideoVolume") ||
                            currentMuted != UserDefaults.standard.bool(forKey: "lastVideoMuted") {
-                            print("State changed - Volume: \(currentVolume), muted: \(currentMuted)")
+                            // Only log state changes, not every timer tick
                             playerObserver.saveCurrentState(volume: currentVolume, isMuted: currentMuted)
                         }
                     }
@@ -719,9 +734,14 @@ struct VideoPlayerContent: View {
                     print("=== VideoPlayer onDisappear START ===")
                     
                     // Stop timer immediately
-                    volumeCheckTimer?.invalidate()
-                    volumeCheckTimer = nil
-                    print("Timer invalidated")
+                    if let timer = volumeCheckTimer {
+                        timer.invalidate()
+                        volumeCheckTimer = nil
+                        activeTimerCount -= 1
+                        print("Timer invalidated, active count: \(activeTimerCount)")
+                    } else {
+                        print("No timer to invalidate")
+                    }
                     
                     // Save current state before closing
                     playerObserver.saveCurrentState(volume: player.volume, isMuted: player.isMuted)
