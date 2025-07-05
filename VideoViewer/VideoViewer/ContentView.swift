@@ -884,18 +884,6 @@ struct VideoListView: View {
                 .buttonStyle(.plain)
                 .help("Grant Folder Access")
                 
-                // Screenshot generation button
-                Button(action: {
-                    generateScreenshots()
-                }) {
-                    Image(systemName: "photo")
-                        .font(.title3)
-                        .foregroundColor(isGeneratingScreenshots ? .secondary : .primary)
-                }
-                .buttonStyle(.plain)
-                .help("Generate Screenshots")
-                .disabled(isGeneratingScreenshots)
-                
                 // Network drive indicator
                 if isNetworkPath(directoryURL) {
                     HStack(spacing: 4) {
@@ -933,6 +921,18 @@ struct VideoListView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Cleanup Filenames")
+                
+                // Screenshot generation button
+                Button(action: {
+                    generateScreenshots()
+                }) {
+                    Image(systemName: "photo")
+                        .font(.title3)
+                        .foregroundColor(isGeneratingScreenshots ? .secondary : .primary)
+                }
+                .buttonStyle(.plain)
+                .help("Generate Screenshots")
+                .disabled(isGeneratingScreenshots)
                 
                 // Filter toggle button
                 Button(action: { 
