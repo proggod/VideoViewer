@@ -18,6 +18,7 @@ struct VideoConversionProgressView: View {
     @State private var showResults = false
     @State private var estimatedTimeRemaining: String = ""
     @State private var startTime: Date?
+    @State private var currentFileStartTime: Date?
     
     var body: some View {
         VStack(spacing: 0) {
@@ -210,7 +211,8 @@ struct VideoConversionProgressView: View {
                     .padding()
                     .background(Color.gray.opacity(0.1))
                 }
-                .frame(width: 600, maxHeight: 500)
+                .frame(width: 600)
+                .frame(maxHeight: 500)
             }
         }
         .frame(width: 600, height: 600)
@@ -230,11 +232,16 @@ struct VideoConversionProgressView: View {
                     currentFileName = videoURL.lastPathComponent
                     currentVideoURL = videoURL
                     currentProgress = 0.0
+                    currentFileStartTime = Date()
+                    estimatedTimeRemaining = ""
                 }
                 
                 do {
                     // Try MKVRemuxer first for compatible MKV files
-                    if videoURL.pathExtension.lowercased() == "mkv" && await MKVRemuxer.shared.canRemux(url: videoURL) {
+                    let isMKV = videoURL.pathExtension.lowercased() == "mkv"
+                    let canRemux = isMKV ? await MKVRemuxer.shared.canRemux(url: videoURL) : false
+                    
+                    if isMKV && canRemux {
                         print("🎬 Using fast remux for: \(videoURL.lastPathComponent)")
                         
                         let outputURL = try await MKVRemuxer.shared.remux(url: videoURL) { progress in
@@ -309,7 +316,7 @@ struct VideoConversionProgressView: View {
         
         // Run ffmpeg conversion
         return try await withCheckedThrowingContinuation { continuation in
-            Task {
+            Task.detached {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: ffmpegPath)
                 
@@ -317,6 +324,7 @@ struct VideoConversionProgressView: View {
                 process.arguments = [
                     "-i", input.path,
                     "-c:v", "libx264",       // Use H.264 video codec
+                    "-progress", "pipe:2",   // Output progress to stderr
                     "-preset", "medium",      // Balance between speed and compression
                     "-crf", "18",            // High quality (lower = better, 18 is visually lossless)
                     "-c:a", "aac",           // Use AAC audio codec
@@ -332,6 +340,7 @@ struct VideoConversionProgressView: View {
                     process.arguments = [
                         "-i", input.path,
                         "-c:v", "h264_videotoolbox",  // Hardware accelerated H.264
+                        "-progress", "pipe:2",         // Output progress to stderr
                         "-b:v", "6M",                  // Video bitrate for HW encoding
                         "-c:a", "aac",
                         "-b:a", "192k",
@@ -362,20 +371,26 @@ struct VideoConversionProgressView: View {
                             if duration == nil {
                                 if let match = output.range(of: "Duration: ") {
                                     let start = output.index(match.upperBound, offsetBy: 0)
-                                    let end = output.index(start, offsetBy: 11)
-                                    let durationStr = String(output[start..<end])
-                                    duration = parseFFmpegDuration(durationStr)
+                                    let remainingString = String(output[start...])
+                                    // Look for the duration format (HH:MM:SS.ms) followed by comma
+                                    if let commaIndex = remainingString.firstIndex(of: ",") {
+                                        let durationStr = String(remainingString[..<commaIndex])
+                                        duration = parseFFmpegDuration(durationStr)
+                                    }
                                 }
                             }
                             
                             // Parse current time for progress
                             if let duration = duration, let match = output.range(of: "time=") {
                                 let start = output.index(match.upperBound, offsetBy: 0)
-                                if let end = output.firstIndex(of: " ", after: start) {
-                                    let timeStr = String(output[start..<end])
+                                let remainingString = String(output[start...])
+                                if let spaceIndex = remainingString.firstIndex(of: " ") {
+                                    let timeStr = String(remainingString[..<spaceIndex])
                                     if let currentTime = parseFFmpegDuration(timeStr) {
                                         let progressValue = min(currentTime / duration, 1.0)
-                                        progress(progressValue)
+                                        Task { @MainActor in
+                                            progress(progressValue)
+                                        }
                                     }
                                 }
                             }
@@ -425,23 +440,22 @@ struct VideoConversionProgressView: View {
     }
     
     private func updateTimeEstimate(progress: Double, currentIndex: Int) {
-        guard let startTime = startTime, progress > 0 else { return }
+        // Use per-file timing for more accurate estimates - CURRENT FILE ONLY
+        guard let fileStartTime = currentFileStartTime, progress > 0 else { return }
         
-        let elapsed = Date().timeIntervalSince(startTime)
-        let totalFiles = Double(videosToConvert.count)
-        let filesComplete = Double(currentIndex) + progress
-        let totalProgress = filesComplete / totalFiles
+        let elapsed = Date().timeIntervalSince(fileStartTime)
         
-        if totalProgress > 0 {
-            let estimatedTotal = elapsed / totalProgress
-            let remaining = estimatedTotal - elapsed
+        // Simple calculation: if 50% done in 30 seconds, total is 60 seconds, so 30 seconds left
+        let estimatedTotalTime = elapsed / progress
+        let remainingTime = estimatedTotalTime - elapsed
+        
+        if remainingTime > 0 {
+            let formatter = DateComponentsFormatter()
+            formatter.allowedUnits = [.hour, .minute, .second]
+            formatter.unitsStyle = .abbreviated
             
-            if remaining > 0 {
-                let formatter = DateComponentsFormatter()
-                formatter.allowedUnits = [.hour, .minute, .second]
-                formatter.unitsStyle = .abbreviated
-                estimatedTimeRemaining = "~\(formatter.string(from: remaining) ?? "")"
-            }
+            // Show only the time for THIS file
+            estimatedTimeRemaining = "~\(formatter.string(from: remainingTime) ?? "")"
         }
     }
 }
@@ -478,11 +492,3 @@ extension Array {
     }
 }
 
-// Extension for string searching
-extension String {
-    func firstIndex(of character: Character, after index: String.Index) -> String.Index? {
-        guard index < endIndex else { return nil }
-        let searchRange = self.index(after: index)..<endIndex
-        return self[searchRange].firstIndex(of: character)
-    }
-}

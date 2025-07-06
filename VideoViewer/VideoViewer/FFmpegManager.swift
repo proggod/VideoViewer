@@ -8,8 +8,7 @@ class FFmpegManager {
     var ffmpegPath: String? {
         // 1. First check for bundled FFmpeg in app resources
         if let bundledPath = Bundle.main.path(forResource: "ffmpeg", ofType: nil) {
-            // Ensure it's executable
-            ensureExecutable(at: bundledPath)
+            // Don't try to modify permissions for bundled resources
             return bundledPath
         }
         
