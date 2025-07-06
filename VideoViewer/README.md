@@ -9,7 +9,14 @@ A native macOS video browser and player application built with SwiftUI, designed
 - **Dual view modes** - Switch between grid view with thumbnails and compact list view
 - **Adjustable thumbnail sizes** - Customize thumbnail size with a slider (100-480px)
 - **Smart thumbnail generation** - Automatically generates and caches video thumbnails
-- **Network drive detection** - Optimized performance for network mounted volumes
+- **Network drive detection** - Optimized performance for network mounted volumes:
+  - Local thumbnail caching for faster loading
+  - Reduced concurrent operations on network drives
+  - Visual "Network Drive" indicator in header
+- **Unsupported file indicators** - Clear visual feedback for problematic files:
+  - Red X overlay on files that can't be played
+  - Counter badge showing number of unsupported files
+  - Automatic detection of incompatible codecs
 - **Inline filename editing** - Click any filename to rename it directly
 - **Refresh button** - Rescan directories for new content
 - **Persistent navigation** - Remembers your last selected directory
@@ -17,7 +24,10 @@ A native macOS video browser and player application built with SwiftUI, designed
 ### Video Playback
 - **Native video player** - Built on AVKit for smooth playback
 - **Volume persistence** - Maintains volume and mute settings across videos
-- **Capture screenshots** - Take snapshots while watching videos
+- **Frame-accurate screenshots** - Take snapshots of the exact paused frame:
+  - No more off-by-a-second captures
+  - Automatic cache invalidation for replaced screenshots
+  - Instant updates in the browser
 - **Multi-window support** - Open multiple videos simultaneously
 
 ### Organization & Filtering
@@ -36,6 +46,16 @@ A native macOS video browser and player application built with SwiftUI, designed
   - Preview changes before applying
   - Batch processing (20, 50, 100, 200, or all files)
   - Automatic space cleanup and normalization
+- **MKV to MP4 conversion** - Fast remuxing for compatible files:
+  - Detects MKV files with H.264/H.265 video
+  - No re-encoding for supported codecs (very fast)
+  - Progress tracking with file-by-file status
+  - Original files backed up as .mkv.bak
+- **Batch screenshot generation** - Create thumbnails automatically:
+  - Generates screenshots at random times (1-2 minutes into video)
+  - Only processes videos without existing thumbnails
+  - Shows preview of each screenshot as it's created
+  - Stop button to cancel batch processing
 - **Right-click delete** - Remove videos with confirmation dialog
 - **Inline rename** - Click any filename to edit it directly
 
@@ -43,6 +63,19 @@ A native macOS video browser and player application built with SwiftUI, designed
 - **Resolution caching** - Instant loading of video metadata after first scan
 - **Lazy loading** - Efficient handling of large video libraries
 - **Background processing** - Non-blocking UI while scanning video metadata
+- **Network optimizations** - Adaptive batch sizes and timeouts for remote drives
+
+## Header Controls
+
+From left to right in the header:
+- **Folder Access** (folder.badge.plus) - Grant permissions for protected folders
+- **Network/Unsupported indicators** - Shows connection type and problem file count
+- **Refresh** (arrow.clockwise) - Rescan current directory
+- **Cleanup** (wand.and.stars) - Batch rename files with rules
+- **Screenshots** (photo) - Generate missing thumbnails
+- **Convert MKV** (film.stack) - Remux compatible MKV files to MP4
+- **Filters** (line.horizontal.3.decrease.circle) - Toggle filter sidebar
+- **View Mode** (list.bullet/square.grid.2x2) - Switch between list and grid
 
 ## Requirements
 

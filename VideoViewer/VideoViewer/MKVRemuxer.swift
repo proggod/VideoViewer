@@ -88,7 +88,8 @@ class MKVRemuxer {
         exportSession.shouldOptimizeForNetworkUse = true
         
         // Monitor progress
-        let progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+        let progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak exportSession] _ in
+            guard let exportSession = exportSession else { return }
             progress(exportSession.progress)
         }
         
