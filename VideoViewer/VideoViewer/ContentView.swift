@@ -244,6 +244,7 @@ struct SimpleBrowser: View {
     @Binding var selectedURL: URL?
     @StateObject private var rootItem = FileItem(url: URL(fileURLWithPath: "/"))
     @State private var refreshTrigger = UUID()
+    @State private var expandedPaths: Set<String> = []
     
     var body: some View {
         VStack(alignment: .leading) {
@@ -253,16 +254,28 @@ struct SimpleBrowser: View {
             
             List {
                 // Add home directory
-                DirectoryRow(item: FileItem(url: FileManager.default.homeDirectoryForCurrentUser), selectedURL: $selectedURL)
+                DirectoryRow(
+                    item: FileItem(url: FileManager.default.homeDirectoryForCurrentUser), 
+                    selectedURL: $selectedURL,
+                    expandedPaths: $expandedPaths
+                )
                 
                 // Add system directories
                 ForEach(["/Applications", "/System", "/Users", "/Volumes"], id: \.self) { path in
-                    DirectoryRow(item: FileItem(url: URL(fileURLWithPath: path)), selectedURL: $selectedURL)
+                    DirectoryRow(
+                        item: FileItem(url: URL(fileURLWithPath: path)), 
+                        selectedURL: $selectedURL,
+                        expandedPaths: $expandedPaths
+                    )
                 }
                 
                 // Add mounted volumes
                 ForEach(getMountedVolumes(), id: \.url) { item in
-                    DirectoryRow(item: item, selectedURL: $selectedURL)
+                    DirectoryRow(
+                        item: item, 
+                        selectedURL: $selectedURL,
+                        expandedPaths: $expandedPaths
+                    )
                 }
             }
             .id(refreshTrigger)
@@ -270,6 +283,29 @@ struct SimpleBrowser: View {
         .onReceive(NotificationCenter.default.publisher(for: .refreshBrowser)) { _ in
             refreshTrigger = UUID()
         }
+        .onAppear {
+            expandToSelectedURL()
+        }
+        .onChange(of: selectedURL) { _, _ in
+            expandToSelectedURL()
+        }
+    }
+    
+    private func expandToSelectedURL() {
+        guard let url = selectedURL else { return }
+        
+        // Get all parent paths that need to be expanded
+        let pathComponents = url.pathComponents
+        var pathsToExpand: [String] = []
+        
+        // Build paths from root to selected directory
+        for i in 1..<pathComponents.count {
+            let path = "/" + pathComponents[1...i].joined(separator: "/")
+            pathsToExpand.append(path)
+        }
+        
+        // Add all paths to expanded set
+        expandedPaths.formUnion(pathsToExpand)
     }
     
     private func getMountedVolumes() -> [FileItem] {
@@ -281,6 +317,7 @@ struct SimpleBrowser: View {
 struct DirectoryRow: View {
     @StateObject var item: FileItem
     @Binding var selectedURL: URL?
+    @Binding var expandedPaths: Set<String>
     @State private var isExpanded = false
     
     var body: some View {
@@ -291,7 +328,14 @@ struct DirectoryRow: View {
                         if !item.hasLoadedChildren {
                             item.loadChildren()
                         }
-                        isExpanded.toggle() 
+                        isExpanded.toggle()
+                        
+                        // Update expanded paths set
+                        if isExpanded {
+                            expandedPaths.insert(item.url.path)
+                        } else {
+                            expandedPaths.remove(item.url.path)
+                        }
                     }) {
                         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                             .font(.caption)
@@ -328,10 +372,23 @@ struct DirectoryRow: View {
             if isExpanded && item.isDirectory {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(item.children) { child in
-                        DirectoryRow(item: child, selectedURL: $selectedURL)
+                        DirectoryRow(
+                            item: child, 
+                            selectedURL: $selectedURL,
+                            expandedPaths: $expandedPaths
+                        )
                             .padding(.leading, 20)
                     }
                 }
+            }
+        }
+        .onAppear {
+            // Check if this path should be expanded
+            if expandedPaths.contains(item.url.path) && !isExpanded {
+                if !item.hasLoadedChildren {
+                    item.loadChildren()
+                }
+                isExpanded = true
             }
         }
     }
@@ -965,6 +1022,8 @@ struct VideoListView: View {
     @State private var currentScreenshotFile: String = ""
     @State private var screenshotTask: Task<Void, Never>?
     @State private var showingMKVRemux = false
+    @State private var showingVideoConversion = false
+    @State private var videosToConvert: [URL] = []
     
     let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
     
@@ -1072,7 +1131,7 @@ struct VideoListView: View {
                     
                     // MKV conversion button
                     Button(action: {
-                        showingMKVRemux = true
+                        prepareVideoConversion()
                     }) {
                         Image(systemName: "film.stack")
                             .font(.title3)
@@ -1258,6 +1317,19 @@ struct VideoListView: View {
                 }
             )
         }
+        .sheet(isPresented: $showingVideoConversion) {
+            VideoConversionProgressView(
+                directoryURL: directoryURL,
+                videosToConvert: videosToConvert,
+                isPresented: $showingVideoConversion,
+                onComplete: {
+                    // Refresh to show converted files
+                    loadVideoFiles()
+                    loadThumbnails()
+                    applyFilters()
+                }
+            )
+        }
         .onAppear {
             loadVideoFiles()
             loadThumbnails()
@@ -1326,8 +1398,8 @@ struct VideoListView: View {
         if !selectedCategories.isEmpty {
             filtered = filtered.filter { videoURL in
                 let videoCategories = categoryManager.getCategoriesForVideo(videoPath: videoURL.path)
-                // Check if video has any of the selected categories
-                return !selectedCategories.isDisjoint(with: videoCategories)
+                // Check if video has ALL of the selected categories (AND logic)
+                return selectedCategories.isSubset(of: videoCategories)
             }
         }
         
@@ -1665,12 +1737,31 @@ struct VideoListView: View {
             // Update category associations in database
             categoryManager.updateVideoPath(from: videoURL.path, to: newURL.path)
             
-            // Clear resolution cache for the directory
-            ResolutionCache.shared.clearCache(for: directoryURL.path)
+            // Update the resolution cache for just this file (don't clear everything!)
+            if let resolution = videoResolutions[videoURL] {
+                // Add the new file to cache with the same resolution
+                ResolutionCache.shared.setResolution(resolution, for: newURL.path, in: directoryURL.path)
+                // Note: The old entry will remain but won't matter since the file no longer exists
+            }
             
-            // Reload files and update UI
-            loadVideoFiles()
-            loadThumbnails()
+            // Update local state efficiently
+            if let index = localVideoFiles.firstIndex(of: videoURL) {
+                localVideoFiles[index] = newURL
+            }
+            
+            // Move resolution and thumbnail to new URL
+            if let resolution = videoResolutions[videoURL] {
+                videoResolutions[newURL] = resolution
+                videoResolutions.removeValue(forKey: videoURL)
+            }
+            
+            if let thumbnail = thumbnails[videoURL] {
+                thumbnails[newURL] = thumbnail
+                thumbnails.removeValue(forKey: videoURL)
+            }
+            
+            // Apply filters to update the view
+            videoFiles = localVideoFiles
             applyFilters()
             
             print("Successfully renamed '\(videoURL.lastPathComponent)' to '\(newURL.lastPathComponent)'")
@@ -1721,6 +1812,29 @@ struct VideoListView: View {
     
     private func generateScreenshots() {
         showingScreenshotProgress = true
+    }
+    
+    private func prepareVideoConversion() {
+        // Find all videos that can be converted (MKV, WMV, AVI, etc.)
+        let convertibleExtensions = ["mkv", "wmv", "avi", "flv", "webm", "mpg", "mpeg", "mov", "m4v"]
+        
+        videosToConvert = filteredVideoFiles.filter { url in
+            let ext = url.pathExtension.lowercased()
+            // Include files with convertible extensions, but exclude MP4 files
+            return convertibleExtensions.contains(ext) && ext != "mp4"
+        }
+        
+        if videosToConvert.isEmpty {
+            // Show alert if no convertible videos found
+            let alert = NSAlert()
+            alert.messageText = "No Videos to Convert"
+            alert.informativeText = "No MKV, WMV, or other convertible video files found in the current directory."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        } else {
+            showingVideoConversion = true
+        }
     }
 }
 

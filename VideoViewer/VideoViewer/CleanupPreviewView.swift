@@ -268,17 +268,14 @@ struct CleanupPreviewView: View {
                 }
             }
             
-            // Clear resolution cache since filenames changed
-            ResolutionCache.shared.clearCache(for: directoryURL.path)
+            // Don't clear the entire cache - the resolution doesn't change when renaming
+            // The old cache entries will be ignored since those files no longer exist
             
             await MainActor.run {
                 isProcessing = false
                 
                 // Notify the file browser to refresh
                 NotificationCenter.default.post(name: .refreshBrowser, object: nil)
-                
-                // Also refresh thumbnails since filenames changed
-                NotificationCenter.default.post(name: .refreshThumbnails, object: nil)
                 
                 onComplete()
                 isPresented = false
