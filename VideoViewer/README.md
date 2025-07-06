@@ -46,11 +46,13 @@ A native macOS video browser and player application built with SwiftUI, designed
   - Preview changes before applying
   - Batch processing (20, 50, 100, 200, or all files)
   - Automatic space cleanup and normalization
-- **MKV to MP4 conversion** - Fast remuxing for compatible files:
-  - Detects MKV files with H.264/H.265 video
-  - No re-encoding for supported codecs (very fast)
-  - Progress tracking with file-by-file status
-  - Original files backed up as .mkv.bak
+- **Video format conversion** - Convert various formats to MP4:
+  - Fast remuxing for MKV files with H.264/H.265 codecs
+  - Full conversion support for WMV, AVI, MOV, and other formats
+  - Uses built-in macOS video processing (no external dependencies)
+  - Real-time progress tracking with video preview
+  - Stop button to cancel conversions
+  - Original files backed up with .bak extension
 - **Batch screenshot generation** - Create thumbnails automatically:
   - Generates screenshots at random times (1-2 minutes into video)
   - Only processes videos without existing thumbnails
@@ -73,7 +75,7 @@ From left to right in the header:
 - **Refresh** (arrow.clockwise) - Rescan current directory
 - **Cleanup** (wand.and.stars) - Batch rename files with rules
 - **Screenshots** (photo) - Generate missing thumbnails
-- **Convert MKV** (film.stack) - Remux compatible MKV files to MP4
+- **Convert Videos** (film.stack) - Convert various video formats to MP4
 - **Filters** (line.horizontal.3.decrease.circle) - Toggle filter sidebar
 - **View Mode** (list.bullet/square.grid.2x2) - Switch between list and grid
 

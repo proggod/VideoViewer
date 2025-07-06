@@ -1137,7 +1137,7 @@ struct VideoListView: View {
                             .font(.title3)
                     }
                     .buttonStyle(.plain)
-                    .tooltip("Convert MKV Files - Convert to MP4")
+                    .tooltip("Convert Videos - Convert various formats to MP4")
                     
                     // Filter toggle button
                     Button(action: { 
@@ -1815,8 +1815,8 @@ struct VideoListView: View {
     }
     
     private func prepareVideoConversion() {
-        // Find all videos that can be converted (MKV, WMV, AVI, etc.)
-        let convertibleExtensions = ["mkv", "wmv", "avi", "flv", "webm", "mpg", "mpeg", "mov", "m4v"]
+        // Find all videos that can be converted using AVFoundation
+        let convertibleExtensions = ["mkv", "wmv", "avi", "mpg", "mpeg", "mov", "m4v", "3gp", "3g2"]
         
         videosToConvert = filteredVideoFiles.filter { url in
             let ext = url.pathExtension.lowercased()
@@ -1828,7 +1828,7 @@ struct VideoListView: View {
             // Show alert if no convertible videos found
             let alert = NSAlert()
             alert.messageText = "No Videos to Convert"
-            alert.informativeText = "No MKV, WMV, or other convertible video files found in the current directory."
+            alert.informativeText = "No convertible video files found. Supported formats: MKV, WMV, AVI, MOV, MPG, MPEG, M4V, 3GP."
             alert.alertStyle = .informational
             alert.addButton(withTitle: "OK")
             alert.runModal()
