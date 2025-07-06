@@ -827,7 +827,7 @@ struct FilterSidebar: View {
             // Check if it's an unsupported format error
             if let avError = error as? AVError {
                 switch avError.code {
-                case .fileFormatNotRecognized, .mediaFormatNotSupported:
+                case .fileFormatNotRecognized:
                     print("Unsupported format: \(url.lastPathComponent)")
                     return "Unsupported"
                 default:
@@ -2305,5 +2305,36 @@ struct VideoPlayerContent: View {
             alert.addButton(withTitle: "OK")
             alert.runModal()
         }
+    }
+    
+    private func getCacheDirectory() -> URL? {
+        let fileManager = FileManager.default
+        
+        guard let appCacheDir = try? fileManager.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ).appendingPathComponent("VideoViewer").appendingPathComponent("thumbnails") else {
+            return nil
+        }
+        
+        // Create the directory if it doesn't exist
+        if !fileManager.fileExists(atPath: appCacheDir.path) {
+            try? fileManager.createDirectory(at: appCacheDir, withIntermediateDirectories: true)
+        }
+        
+        return appCacheDir
+    }
+    
+    private func getCachedThumbnailURL(for videoURL: URL) -> URL? {
+        guard let cacheDir = getCacheDirectory() else { return nil }
+        
+        // Create a unique filename based on the full path
+        let pathHash = videoURL.path.data(using: .utf8)?.base64EncodedString() ?? ""
+        let safeHash = pathHash.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+        
+        return cacheDir.appendingPathComponent("\(safeHash).png")
     }
 }
