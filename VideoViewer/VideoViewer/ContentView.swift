@@ -652,10 +652,8 @@ struct FilterSidebar: View {
                 )
                 
                 self.cachedCount = newVideoResolutions.count
-                self.scanningCount = uncachedFiles.count
                 
                 print("✅ Loaded \(newVideoResolutions.count) resolutions from cache for \(directoryPath)")
-                print("✅ Found \(uncachedFiles.count) files without cached resolutions")
             }
         }
         
@@ -699,7 +697,10 @@ struct FilterSidebar: View {
                     await MainActor.run {
                         self.availableResolutions = newResolutions
                         self.videoResolutions = newVideoResolutions
+                        self.cachedCount = newVideoResolutions.count
+                        self.scanningCount = uncachedFiles.count
                     }
+                    print("✅ Found \(uncachedFiles.count) files without cached resolutions")
                 }
                 
                 // Second pass: load uncached files in parallel (limit concurrency)
