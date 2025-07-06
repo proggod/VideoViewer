@@ -2286,6 +2286,12 @@ struct VideoPlayerContent: View {
             NSSound.beep()
             print("Camera sound played (system beep)")
             
+            // Invalidate the cached thumbnail for this specific video
+            if let cachedURL = getCachedThumbnailURL(for: videoURL) {
+                try? FileManager.default.removeItem(at: cachedURL)
+                print("Invalidated cached thumbnail for: \(videoURL.lastPathComponent)")
+            }
+            
             // Notify to refresh thumbnails
             NotificationCenter.default.post(name: .refreshThumbnails, object: nil)
         } catch {
