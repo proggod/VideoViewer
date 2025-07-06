@@ -148,9 +148,17 @@ struct MKVRemuxProgressView: View {
                         let failureCount = results.filter { if case .failure = $0 { return true } else { return false } }.count
                         let skippedCount = results.filter { if case .skipped = $0 { return true } else { return false } }.count
                         
-                        Text("\(successCount) converted, \(failureCount) failed, \(skippedCount) skipped")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(successCount) converted, \(failureCount) failed, \(skippedCount) skipped")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            
+                            if successCount > 0 {
+                                Text("Converted MKV files are now MP4. Original files saved as .mkv.bak")
+                                    .font(.caption2)
+                                    .foregroundColor(.green)
+                            }
+                        }
                         
                         Spacer()
                         

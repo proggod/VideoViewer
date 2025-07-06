@@ -625,13 +625,18 @@ struct FilterSidebar: View {
                 self.videoResolutions = newVideoResolutions
                 
                 // Notify immediately with cached data
+                let unsupported = newVideoResolutions.filter { $0.value == "Unsupported" }.map { $0.key }
                 NotificationCenter.default.post(
                     name: Notification.Name("videoResolutionsUpdated"),
                     object: nil,
-                    userInfo: ["resolutions": newVideoResolutions]
+                    userInfo: [
+                        "resolutions": newVideoResolutions,
+                        "unsupported": Set(unsupported)
+                    ]
                 )
                 
-                print("Loaded \(newVideoResolutions.count) resolutions from cache for \(directoryPath)")
+                print("✅ Loaded \(newVideoResolutions.count) resolutions from cache for \(directoryPath)")
+                print("✅ Found \(uncachedFiles.count) files without cached resolutions")
             }
         }
         
@@ -1577,8 +1582,8 @@ struct VideoListView: View {
         editingVideo = nil
         editingText = ""
         
-        // Clear resolution cache to force re-scanning
-        ResolutionCache.shared.clearCache(for: directoryURL.path)
+        // Don't clear the cache - just reload to find new files
+        // ResolutionCache.shared.clearCache(for: directoryURL.path)
         
         // Reload all data
         loadVideoFiles()
@@ -1587,6 +1592,7 @@ struct VideoListView: View {
         
         // The resolution loading will happen automatically via the existing
         // ResolutionCache mechanism when the view refreshes
+        // It will only scan new files that aren't in the cache
         
         print("Directory refreshed: \(directoryURL.path)")
     }
