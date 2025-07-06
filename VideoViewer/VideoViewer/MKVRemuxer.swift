@@ -87,14 +87,24 @@ class MKVRemuxer {
         exportSession.outputFileType = .mp4
         exportSession.shouldOptimizeForNetworkUse = true
         
-        // Monitor progress
-        let progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            progress(exportSession.progress)
+        // Start export with progress monitoring
+        await withCheckedContinuation { continuation in
+            // Monitor progress
+            let progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
+                progress(exportSession.progress)
+                
+                if exportSession.status == .completed || 
+                   exportSession.status == .failed || 
+                   exportSession.status == .cancelled {
+                    timer.invalidate()
+                }
+            }
+            
+            exportSession.exportAsynchronously {
+                progressTimer.invalidate()
+                continuation.resume()
+            }
         }
-        
-        // Start export
-        await exportSession.export()
-        progressTimer.invalidate()
         
         switch exportSession.status {
         case .completed:

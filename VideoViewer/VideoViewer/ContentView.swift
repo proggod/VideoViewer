@@ -660,13 +660,12 @@ struct FilterSidebar: View {
         // Then load any missing resolutions asynchronously
         isLoadingResolutions = true
         
-        // Set initial counts
-        await MainActor.run {
-            self.cachedCount = 0
-            self.scanningCount = 0
-        }
-        
         Task {
+            // Set initial counts
+            await MainActor.run {
+                self.cachedCount = 0
+                self.scanningCount = 0
+            }
             // Get all video files in directory
             let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
             
