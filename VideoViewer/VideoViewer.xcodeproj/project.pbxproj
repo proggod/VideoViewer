@@ -16,6 +16,7 @@
 		DAD0E942B31406E7F4B44C63 /* CleanupManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1981DF0D11F7DBF87D82AD82 /* CleanupManager.swift */; };
 		3C4F5F832B06936FBE499439 /* CleanupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9055C2ABFA03E1D37A069F5 /* CleanupView.swift */; };
 		BA2E6615FB8334936B7482B2 /* CleanupPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1FB6A99500A60C5735E9FEE /* CleanupPreviewView.swift */; };
+		C84B7291FB9445C8A7F92B47 /* ScreenshotProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A8C439EE8746B9C1E84F58 /* ScreenshotProgressView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -29,6 +30,7 @@
 				1981DF0D11F7DBF87D82AD82 /* CleanupManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupManager.swift; sourceTree = "<group>"; };
 		A9055C2ABFA03E1D37A069F5 /* CleanupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupView.swift; sourceTree = "<group>"; };
 		A1FB6A99500A60C5735E9FEE /* CleanupPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupPreviewView.swift; sourceTree = "<group>"; };
+		D2A8C439EE8746B9C1E84F58 /* ScreenshotProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotProgressView.swift; sourceTree = "<group>"; };
 F76E539E45EE7215CB3D371B /* CategorySystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategorySystem.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -68,6 +70,7 @@ F76E539E45EE7215CB3D371B /* CategorySystem.swift */ = {isa = PBXFileReference; l
 				1981DF0D11F7DBF87D82AD82 /* CleanupManager.swift */,
 				A9055C2ABFA03E1D37A069F5 /* CleanupView.swift */,
 				A1FB6A99500A60C5735E9FEE /* CleanupPreviewView.swift */,
+				D2A8C439EE8746B9C1E84F58 /* ScreenshotProgressView.swift */,
 				1D1234641234567890ABCDEF /* AppDelegate.swift */,
 				1D1234591234567890ABCDEF /* Assets.xcassets */,
 				1D12345E1234567890ABCDEF /* VideoViewer.entitlements */,
@@ -159,6 +162,7 @@ F76E539E45EE7215CB3D371B /* CategorySystem.swift */ = {isa = PBXFileReference; l
 				DAD0E942B31406E7F4B44C63 /* CleanupManager.swift in Sources */,
 				3C4F5F832B06936FBE499439 /* CleanupView.swift in Sources */,
 				BA2E6615FB8334936B7482B2 /* CleanupPreviewView.swift in Sources */,
+				C84B7291FB9445C8A7F92B47 /* ScreenshotProgressView.swift in Sources */,
 				1D1234561234567890ABCDEF /* VideoViewerApp.swift in Sources */,
 				1D1234651234567890ABCDEF /* AppDelegate.swift in Sources */,
 			);

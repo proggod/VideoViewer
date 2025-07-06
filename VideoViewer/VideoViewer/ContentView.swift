@@ -609,7 +609,6 @@ struct FilterSidebar: View {
         
         // First, load from cache
         let directoryPath = directoryURL.path
-        var hasCachedData = false
         
         if let cachedResolutions = ResolutionCache.shared.getResolutions(for: directoryPath) {
             var newResolutions: Set<String> = []
@@ -622,7 +621,6 @@ struct FilterSidebar: View {
             }
             
             if !newResolutions.isEmpty {
-                hasCachedData = true
                 self.availableResolutions = newResolutions
                 self.videoResolutions = newVideoResolutions
                 
@@ -859,103 +857,109 @@ struct VideoListView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header with title and view toggle
             HStack {
-                Text(getDisplayName(for: directoryURL))
-                    .font(.title2)
-                
-                // Add folder access button for permission issues
-                Button(action: {
-                    let panel = NSOpenPanel()
-                    panel.canChooseFiles = false
-                    panel.canChooseDirectories = true
-                    panel.allowsMultipleSelection = false
-                    panel.message = "Grant access to a folder"
+                // Left side - title and indicators
+                HStack {
+                    Text(getDisplayName(for: directoryURL))
+                        .font(.title2)
                     
-                    if panel.runModal() == .OK {
-                        if let url = panel.url {
-                            // Save bookmark for persistent access
-                            saveBookmark(for: url)
+                    // Add folder access button for permission issues
+                    Button(action: {
+                        let panel = NSOpenPanel()
+                        panel.canChooseFiles = false
+                        panel.canChooseDirectories = true
+                        panel.allowsMultipleSelection = false
+                        panel.message = "Grant access to a folder"
+                        
+                        if panel.runModal() == .OK {
+                            if let url = panel.url {
+                                // Save bookmark for persistent access
+                                saveBookmark(for: url)
+                            }
                         }
-                    }
-                }) {
-                    Image(systemName: "folder.badge.plus")
-                        .font(.caption)
-                        .foregroundColor(.blue)
-                }
-                .buttonStyle(.plain)
-                .help("Grant Folder Access")
-                
-                // Network drive indicator
-                if isNetworkPath(directoryURL) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "network")
+                    }) {
+                        Image(systemName: "folder.badge.plus")
                             .font(.caption)
                             .foregroundColor(.blue)
-                        Text("Network Drive")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.blue.opacity(0.1))
-                    .cornerRadius(6)
+                    .buttonStyle(.plain)
+                    .help("Grant Folder Access")
+                    
+                    // Network drive indicator
+                    if isNetworkPath(directoryURL) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "network")
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                            Text("Network Drive")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.blue.opacity(0.1))
+                        .cornerRadius(6)
+                    }
                 }
                 
                 Spacer()
                 
-                // Refresh button
-                Button(action: { 
-                    refreshDirectory()
-                }) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.title3)
-                }
-                .buttonStyle(.plain)
-                .help("Refresh Directory")
-                
-                // Cleanup button
-                Button(action: { 
-                    showingCleanupPreview = true
-                }) {
-                    Image(systemName: "wand.and.stars")
-                        .font(.title3)
-                }
-                .buttonStyle(.plain)
-                .help("Cleanup Filenames")
-                
-                // Screenshot generation button
-                Button(action: {
-                    generateScreenshots()
-                }) {
-                    Image(systemName: "photo")
-                        .font(.title3)
-                        .foregroundColor(isGeneratingScreenshots ? .secondary : .primary)
-                }
-                .buttonStyle(.plain)
-                .help("Generate Screenshots")
-                .disabled(isGeneratingScreenshots)
-                
-                // Filter toggle button
-                Button(action: { 
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showFilters.toggle()
+                // Right side - action buttons
+                HStack {
+                    // Refresh button
+                    Button(action: { 
+                        refreshDirectory()
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.title3)
                     }
-                }) {
-                    Image(systemName: "line.horizontal.3.decrease.circle")
-                        .font(.title3)
+                    .buttonStyle(.plain)
+                    .help("Refresh Directory")
+                    
+                    // Cleanup button
+                    Button(action: { 
+                        showingCleanupPreview = true
+                    }) {
+                        Image(systemName: "wand.and.stars")
+                            .font(.title3)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Cleanup Filenames")
+                    
+                    // Screenshot generation button
+                    Button(action: {
+                        generateScreenshots()
+                    }) {
+                        Image(systemName: "photo")
+                            .font(.title3)
+                            .foregroundColor(isGeneratingScreenshots ? .secondary : .primary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Generate Screenshots")
+                    .disabled(isGeneratingScreenshots)
+                    
+                    // Filter toggle button
+                    Button(action: { 
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showFilters.toggle()
+                        }
+                    }) {
+                        Image(systemName: "line.horizontal.3.decrease.circle")
+                            .font(.title3)
+                    }
+                    .buttonStyle(.plain)
+                    .help(showFilters ? "Hide Filters" : "Show Filters")
+                    
+                    // View toggle button
+                    Button(action: { 
+                        isGridView.toggle()
+                        UserDefaults.standard.set(isGridView, forKey: "isGridView")
+                    }) {
+                        Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2")
+                            .font(.title3)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isGridView ? "Switch to List View" : "Switch to Grid View")
                 }
-                .buttonStyle(.plain)
-                .help(showFilters ? "Hide Filters" : "Show Filters")
-                
-                // View toggle button
-                Button(action: { 
-                    isGridView.toggle()
-                    UserDefaults.standard.set(isGridView, forKey: "isGridView")
-                }) {
-                    Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2")
-                        .font(.title3)
-                }
-                .buttonStyle(.plain)
-                .help(isGridView ? "Switch to List View" : "Switch to Grid View")
             }
             .padding()
             
