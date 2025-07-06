@@ -978,14 +978,7 @@ struct VideoListView: View {
                             .foregroundColor(.blue)
                     }
                     .buttonStyle(.plain)
-                    .help(Text("Grant access to protected folders (Documents, Downloads, etc."))
-                    .onHover { hovering in
-                        if hovering {
-                            NSCursor.pointingHand.push()
-                        } else {
-                            NSCursor.pop()
-                        }
-                    }
+                    .tooltip("Grant access to protected folders")
                     
                     // Network drive indicator
                     if isNetworkPath(directoryURL) {
@@ -1001,7 +994,7 @@ struct VideoListView: View {
                         .padding(.vertical, 4)
                         .background(Color.blue.opacity(0.1))
                         .cornerRadius(6)
-                        .help("This folder is on a network drive. Performance may be slower.")
+                        .tooltip("Network drive - Performance may be slower")
                     }
                     
                     // Unsupported files indicator
@@ -1018,7 +1011,7 @@ struct VideoListView: View {
                         .padding(.vertical, 4)
                         .background(Color.red.opacity(0.1))
                         .cornerRadius(6)
-                        .help("\(unsupportedFiles.count) files have unsupported codecs and cannot be played. Use Convert MKV to fix compatible files.")
+                        .tooltip("\(unsupportedFiles.count) files with unsupported codecs")
                     }
                 }
                 
@@ -1034,7 +1027,7 @@ struct VideoListView: View {
                             .font(.title3)
                     }
                     .buttonStyle(.plain)
-                    .help(Text("Refresh Directory - Rescan for new files"))
+                    .tooltip("Refresh Directory - Rescan for new files")
                     
                     // Cleanup button
                     Button(action: { 
@@ -1044,7 +1037,7 @@ struct VideoListView: View {
                             .font(.title3)
                     }
                     .buttonStyle(.plain)
-                    .help(Text("Cleanup Filenames - Batch rename files with search/replace rules"))
+                    .tooltip("Cleanup Filenames - Batch rename with rules")
                     
                     // Screenshot generation button
                     Button(action: {
@@ -1055,7 +1048,7 @@ struct VideoListView: View {
                             .foregroundColor(isGeneratingScreenshots ? .secondary : .primary)
                     }
                     .buttonStyle(.plain)
-                    .help(Text("Generate Screenshots - Create thumbnails for videos without them"))
+                    .tooltip("Generate Screenshots - Create missing thumbnails")
                     .disabled(isGeneratingScreenshots)
                     
                     // MKV conversion button
@@ -1066,7 +1059,7 @@ struct VideoListView: View {
                             .font(.title3)
                     }
                     .buttonStyle(.plain)
-                    .help(Text("Convert MKV Files - Convert compatible MKV files to MP4"))
+                    .tooltip("Convert MKV Files - Convert to MP4")
                     
                     // Filter toggle button
                     Button(action: { 
@@ -1078,7 +1071,7 @@ struct VideoListView: View {
                             .font(.title3)
                     }
                     .buttonStyle(.plain)
-                    .help(Text(showFilters ? "Hide Filters - Hide category and resolution filters" : "Show Filters - Show category and resolution filters"))
+                    .tooltip(showFilters ? "Hide Filters" : "Show Filters")
                     
                     // View toggle button
                     Button(action: { 
@@ -1089,7 +1082,7 @@ struct VideoListView: View {
                             .font(.title3)
                     }
                     .buttonStyle(.plain)
-                    .help(Text(isGridView ? "Switch to List View - Compact list of videos" : "Switch to Grid View - Thumbnail grid of videos"))
+                    .tooltip(isGridView ? "Switch to List View" : "Switch to Grid View")
                 }
             }
             .padding()
