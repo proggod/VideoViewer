@@ -2211,6 +2211,10 @@ struct VideoPlayerContent: View {
         let imageGenerator = AVAssetImageGenerator(asset: asset)
         imageGenerator.appliesPreferredTrackTransform = true
         
+        // Force exact frame capture - don't seek to nearest keyframe
+        imageGenerator.requestedTimeToleranceBefore = CMTime.zero
+        imageGenerator.requestedTimeToleranceAfter = CMTime.zero
+        
         // Get exact current playback time
         let currentTime = player.currentTime()
         

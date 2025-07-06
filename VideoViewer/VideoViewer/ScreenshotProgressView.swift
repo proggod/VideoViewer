@@ -241,6 +241,10 @@ struct ScreenshotProgressView: View {
         imageGenerator.appliesPreferredTrackTransform = true
         imageGenerator.maximumSize = CGSize(width: 480, height: 480)
         
+        // Force exact frame capture - don't seek to nearest keyframe
+        imageGenerator.requestedTimeToleranceBefore = CMTime.zero
+        imageGenerator.requestedTimeToleranceAfter = CMTime.zero
+        
         do {
             let cgImage = try await imageGenerator.image(at: time).image
             return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
