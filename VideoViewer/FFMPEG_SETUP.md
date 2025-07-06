@@ -1,24 +1,41 @@
 # FFmpeg Integration Setup
 
-This app uses FFmpegKit to provide video conversion functionality with FFmpeg bundled directly in the app. Users don't need to install anything separately.
+This app uses FFmpeg for video conversion. Due to SDL2 dependency issues with some FFmpeg packages, we have several options:
 
-## Adding FFmpegKit to the Project
+## Option 1: Use System FFmpeg (Simplest for Development)
 
-1. **Open VideoViewer.xcodeproj in Xcode**
+For development, you can install FFmpeg locally:
+```bash
+brew install ffmpeg
+```
 
-2. **Add the Swift Package**:
-   - Select the VideoViewer project in the navigator
-   - Select the VideoViewer target
-   - Go to the "Package Dependencies" tab
-   - Click the "+" button
-   - Enter the repository URL: `https://github.com/kingslay/FFmpegKit`
-   - Click "Add Package"
-   - Select the latest version
-   - Choose "FFmpegKit" product and add it to the VideoViewer target
+The app will use the system FFmpeg if available.
 
-3. **Build Settings** (if needed):
-   - The package should automatically configure everything
-   - FFmpeg binaries are embedded in the framework
+## Option 2: Bundle FFmpeg Binary (For Distribution)
+
+1. **Download precompiled FFmpeg binary** (without SDL2 dependency):
+   - Visit https://evermeet.cx/ffmpeg/
+   - Download the static build (doesn't require external libraries)
+   
+2. **Add to Xcode project**:
+   - Drag the ffmpeg binary into your Xcode project
+   - Add it to "Copy Bundle Resources" build phase
+   - Update the code to use the bundled binary
+
+## Option 3: Use FFmpeg-iOS Package
+
+1. **Add the package**:
+   - URL: `https://github.com/kewlbear/FFmpeg-iOS`
+   - This allows building custom FFmpeg without SDL2
+
+## Current Implementation
+
+The app currently tries to use FFmpeg from these locations:
+- `/usr/local/bin/ffmpeg` (Homebrew Intel)
+- `/opt/homebrew/bin/ffmpeg` (Homebrew Apple Silicon)
+- `/usr/bin/ffmpeg` (System)
+
+For a fully self-contained app, Option 2 with a static FFmpeg binary is recommended.
 
 ## Features Provided
 

@@ -49,7 +49,7 @@ A native macOS video browser and player application built with SwiftUI, designed
 - **Video format conversion** - Convert various formats to MP4:
   - Fast remuxing for MKV files with H.264/H.265 codecs
   - Full conversion support for WMV, AVI, MOV, FLV, WebM and more
-  - FFmpeg bundled in app - no installation required
+  - Works with system FFmpeg or bundled binary (see BUNDLE_FFMPEG.md)
   - Hardware acceleration via VideoToolbox
   - Real-time progress tracking with video preview
   - Stop button to cancel conversions
