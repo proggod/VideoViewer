@@ -48,12 +48,14 @@ A native macOS video browser and player application built with SwiftUI, designed
   - Automatic space cleanup and normalization
 - **Video format conversion** - Convert various formats to MP4:
   - Fast remuxing for MKV files with H.264/H.265 codecs
-  - Full conversion support for WMV, AVI, MOV, FLV, WebM and more
-  - Works with system FFmpeg or bundled binary (see BUNDLE_FFMPEG.md)
-  - Hardware acceleration via VideoToolbox
-  - Real-time progress tracking with video preview
-  - Stop button to cancel conversions
-  - Original files backed up with .bak extension
+  - Full conversion support for WMV, AVI, MOV, MPG, MPEG, M4V, 3GP and more
+  - Self-contained FFmpeg binary (152MB universal Intel/ARM64) - no installation needed
+  - Hardware acceleration via VideoToolbox when available
+  - Live FFmpeg terminal output with real-time debugging
+  - Accurate per-file time estimation and progress tracking
+  - 15-minute timeout protection against stuck conversions
+  - Stop button to cancel conversions at any time
+  - Original files automatically backed up with .bak extension
 - **Batch screenshot generation** - Create thumbnails automatically:
   - Generates screenshots at random times (1-2 minutes into video)
   - Only processes videos without existing thumbnails
@@ -76,7 +78,7 @@ From left to right in the header:
 - **Refresh** (arrow.clockwise) - Rescan current directory
 - **Cleanup** (wand.and.stars) - Batch rename files with rules
 - **Screenshots** (photo) - Generate missing thumbnails
-- **Convert Videos** (film.stack) - Convert various video formats to MP4 with bundled FFmpeg
+- **Convert Videos** (film.stack) - Convert various video formats to MP4 with live debug output
 - **Filters** (line.horizontal.3.decrease.circle) - Toggle filter sidebar
 - **View Mode** (list.bullet/square.grid.2x2) - Switch between list and grid
 
@@ -87,9 +89,13 @@ From left to right in the header:
 
 ## Supported Video Formats
 
-- MP4, MOV, AVI, MKV, M4V
-- WebM, FLV, WMV
-- MPG, MPEG
+### Playback
+- MP4, MOV, AVI, MKV, M4V, WebM, FLV, WMV, MPG, MPEG
+
+### Conversion (to MP4)
+- **Fast remux**: MKV files with H.264/H.265 video and AAC/MP3 audio
+- **Full conversion**: WMV, AVI, MOV, MPG, MPEG, M4V, 3GP, 3G2
+- **Hardware accelerated**: Uses VideoToolbox on Apple Silicon and Intel Macs when available
 
 ## Installation
 
@@ -129,6 +135,17 @@ open VideoViewer.xcodeproj
 - Click the tag icon to show/hide category assignments
 - Check/uncheck categories to organize videos
 - Volume and mute settings persist between videos
+
+### Video Conversion Features
+- Automatically detects convertible video formats in the current directory
+- Tries fast remuxing first for compatible MKV files (seconds vs minutes)
+- Falls back to full FFmpeg conversion for other formats or incompatible codecs
+- Live terminal output shows exactly what FFmpeg is doing
+- Real-time progress bar with accurate time estimation per file
+- Hardware acceleration automatically enabled when supported
+- 15-minute timeout prevents infinite hangs on problematic files
+- Stop button immediately terminates conversion process
+- Original files safely backed up before conversion
 
 ## Data Storage
 

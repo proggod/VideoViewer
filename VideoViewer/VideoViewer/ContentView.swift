@@ -1320,7 +1320,7 @@ struct VideoListView: View {
         .sheet(isPresented: $showingVideoConversion) {
             VideoConversionProgressView(
                 directoryURL: directoryURL,
-                videosToConvert: videosToConvert,
+                allVideoFiles: videoFiles,
                 isPresented: $showingVideoConversion,
                 onComplete: {
                     // Refresh to show converted files
@@ -1572,37 +1572,20 @@ struct VideoListView: View {
             do {
                 let resourceValues = try url.resourceValues(forKeys: [.volumeURLForRemountingKey, .volumeIsLocalKey])
                 
-                // Log the detection results
-                print("Checking path: \(url.path)")
-                print("  - volumeIsLocal: \(resourceValues.volumeIsLocal ?? false)")
-                print("  - volumeURLForRemounting: \(resourceValues.volumeURLForRemounting?.absoluteString ?? "none")")
-                
                 // If volumeIsLocalKey is false, it's a network drive
                 if let isLocal = resourceValues.volumeIsLocal {
-                    let isNetwork = !isLocal
-                    print("  - Detected as: \(isNetwork ? "Network Drive" : "Local Drive")")
-                    return isNetwork
-                }
-                
-                // Alternative check: if it has a remounting URL, it's likely network
-                if resourceValues.volumeURLForRemounting != nil {
-                    print("  - Detected as: Network Drive (has remounting URL)")
+                    return !isLocal
+                } else if resourceValues.volumeURLForRemounting != nil {
                     return true
                 }
             } catch {
-                print("Error checking if path is network: \(error)")
+                // Silently handle errors
             }
         }
         
         // Check for common network path patterns
-        let isNetwork = url.path.hasPrefix("/Volumes/") && 
-                       !url.path.hasPrefix("/Volumes/Macintosh")
-        
-        if isNetwork {
-            print("Path \(url.path) detected as network drive by pattern matching")
-        }
-        
-        return isNetwork
+        return url.path.hasPrefix("/Volumes/") && 
+               !url.path.hasPrefix("/Volumes/Macintosh")
     }
     
     private func getCacheDirectory() -> URL? {
@@ -1815,26 +1798,8 @@ struct VideoListView: View {
     }
     
     private func prepareVideoConversion() {
-        // Find all videos that can be converted (MKV, WMV, AVI, etc.)
-        let convertibleExtensions = ["mkv", "wmv", "avi", "flv", "webm", "mpg", "mpeg", "mov", "m4v"]
-        
-        videosToConvert = filteredVideoFiles.filter { url in
-            let ext = url.pathExtension.lowercased()
-            // Include files with convertible extensions, but exclude MP4 files
-            return convertibleExtensions.contains(ext) && ext != "mp4"
-        }
-        
-        if videosToConvert.isEmpty {
-            // Show alert if no convertible videos found
-            let alert = NSAlert()
-            alert.messageText = "No Videos to Convert"
-            alert.informativeText = "No MKV, WMV, or other convertible video files found in the current directory."
-            alert.alertStyle = .informational
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        } else {
-            showingVideoConversion = true
-        }
+        // Just show the conversion dialog - it will filter the files itself
+        showingVideoConversion = true
     }
 }
 

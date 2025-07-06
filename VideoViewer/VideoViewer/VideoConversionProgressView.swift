@@ -4,9 +4,11 @@ import AVKit
 
 struct VideoConversionProgressView: View {
     let directoryURL: URL
-    let videosToConvert: [URL]
+    let allVideoFiles: [URL]
     @Binding var isPresented: Bool
     let onComplete: () -> Void
+    
+    @State private var videosToConvert: [URL] = []
     
     @State private var isProcessing = false
     @State private var processedCount = 0
@@ -14,11 +16,14 @@ struct VideoConversionProgressView: View {
     @State private var currentProgress: Double = 0.0
     @State private var currentVideoURL: URL?
     @State private var conversionTask: Task<Void, Never>?
+    @State private var currentFFmpegProcess: Process?
+    @State private var hasLoggedInitialOutput = false
     @State private var results: [ConversionResult] = []
     @State private var showResults = false
     @State private var estimatedTimeRemaining: String = ""
     @State private var startTime: Date?
     @State private var currentFileStartTime: Date?
+    @State private var debugOutput = ""
     
     var body: some View {
         VStack(spacing: 0) {
@@ -41,8 +46,26 @@ struct VideoConversionProgressView: View {
             .background(Color.gray.opacity(0.1))
             
             if !isProcessing && !showResults {
-                // Start screen
-                VStack(spacing: 20) {
+                if videosToConvert.isEmpty {
+                    // No videos to convert
+                    VStack(spacing: 20) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 60))
+                            .foregroundColor(.orange)
+                        
+                        Text("No Videos to Convert")
+                            .font(.title3)
+                        
+                        Text("No convertible video files found. Supported formats: MKV, WMV, AVI, MOV, MPG, MPEG, M4V, 3GP.")
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding()
+                } else {
+                    // Start screen
+                    VStack(spacing: 20) {
                     Image(systemName: "film.stack")
                         .font(.system(size: 60))
                         .foregroundColor(.blue)
@@ -68,16 +91,43 @@ struct VideoConversionProgressView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding()
+                }
             } else if isProcessing {
                 // Processing view
                 VStack(spacing: 16) {
-                    // Video preview
-                    if let videoURL = currentVideoURL {
-                        VideoPlayer(player: AVPlayer(url: videoURL))
-                            .frame(height: 200)
-                            .cornerRadius(8)
-                            .padding(.horizontal)
+                    // Debug output terminal
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("FFmpeg Output")
+                                .font(.headline)
+                                .foregroundColor(.green)
+                            Spacer()
+                            if !debugOutput.isEmpty {
+                                Button("Clear") {
+                                    debugOutput = ""
+                                }
+                                .font(.caption)
+                            }
+                        }
+                        
+                        ScrollView {
+                            ScrollViewReader { proxy in
+                                Text(debugOutput.isEmpty ? "Starting FFmpeg..." : debugOutput)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundColor(.green)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                                    .id("bottom")
+                                    .onChange(of: debugOutput) { _, _ in
+                                        proxy.scrollTo("bottom", anchor: .bottom)
+                                    }
+                            }
+                        }
+                        .frame(height: 200)
+                        .background(Color.black)
+                        .cornerRadius(8)
                     }
+                    .padding(.horizontal)
                     
                     // Current file info
                     VStack(spacing: 8) {
@@ -216,6 +266,20 @@ struct VideoConversionProgressView: View {
             }
         }
         .frame(width: 600, height: 600)
+        .onAppear {
+            loadVideosToConvert()
+        }
+    }
+    
+    private func loadVideosToConvert() {
+        // Filter videos that can be converted
+        let convertibleExtensions = ["mkv", "wmv", "avi", "mpg", "mpeg", "mov", "m4v", "3gp", "3g2"]
+        
+        videosToConvert = allVideoFiles.filter { url in
+            let ext = url.pathExtension.lowercased()
+            // Include files with convertible extensions, but exclude MP4 files
+            return convertibleExtensions.contains(ext) && ext != "mp4"
+        }
     }
     
     private func startConversion() {
@@ -234,6 +298,9 @@ struct VideoConversionProgressView: View {
                     currentProgress = 0.0
                     currentFileStartTime = Date()
                     estimatedTimeRemaining = ""
+                    hasLoggedInitialOutput = false
+                    // Clear debug output for new file to prevent memory issues
+                    debugOutput = "Starting conversion of: \(videoURL.lastPathComponent)\n"
                 }
                 
                 do {
@@ -264,9 +331,12 @@ struct VideoConversionProgressView: View {
                             }
                         }
                         
-                        // Rename original to .bak
+                        // Rename original to .bak temporarily
                         let backupURL = videoURL.appendingPathExtension("bak")
                         try FileManager.default.moveItem(at: videoURL, to: backupURL)
+                        
+                        // If conversion succeeded, delete the backup
+                        try? FileManager.default.removeItem(at: backupURL)
                         
                         results.append(.success(original: videoURL, output: outputURL, method: .converted))
                     }
@@ -294,6 +364,10 @@ struct VideoConversionProgressView: View {
     }
     
     private func stopConversion() {
+        // Immediately terminate FFmpeg process
+        currentFFmpegProcess?.terminate()
+        currentFFmpegProcess = nil
+        
         conversionTask?.cancel()
         conversionTask = nil
         
@@ -318,6 +392,11 @@ struct VideoConversionProgressView: View {
         return try await withCheckedThrowingContinuation { continuation in
             Task.detached {
                 let process = Process()
+                
+                // Store process reference for immediate termination
+                Task { @MainActor in
+                    self.currentFFmpegProcess = process
+                }
                 process.executableURL = URL(fileURLWithPath: ffmpegPath)
                 
                 // Set up arguments for high quality conversion with hardware acceleration
@@ -361,36 +440,98 @@ struct VideoConversionProgressView: View {
                 conversionTask = Task {
                     let errorHandle = errorPipe.fileHandleForReading
                     var duration: Double?
+                    var lastProgressTime = Date()
+                    var progressCounter = 0.0
+                    var outputBuffer = ""
                     
                     while !Task.isCancelled {
                         let data = errorHandle.availableData
-                        guard !data.isEmpty else { break }
+                        guard !data.isEmpty else { 
+                            // If no output for 5 seconds, show fake progress to indicate activity
+                            if Date().timeIntervalSince(lastProgressTime) > 5 {
+                                let newProgress = min(progressCounter + 0.01, 0.95) // Cap at 95% for fake progress
+                                progressCounter = newProgress
+                                Task { @MainActor in
+                                    progress(newProgress)
+                                }
+                                lastProgressTime = Date()
+                            }
+                            try? await Task.sleep(nanoseconds: 100_000_000)
+                            continue 
+                        }
                         
                         if let output = String(data: data, encoding: .utf8) {
-                            // Parse duration if not yet found
-                            if duration == nil {
-                                if let match = output.range(of: "Duration: ") {
-                                    let start = output.index(match.upperBound, offsetBy: 0)
-                                    let remainingString = String(output[start...])
-                                    // Look for the duration format (HH:MM:SS.ms) followed by comma
-                                    if let commaIndex = remainingString.firstIndex(of: ",") {
-                                        let durationStr = String(remainingString[..<commaIndex])
-                                        duration = parseFFmpegDuration(durationStr)
+                            // Add to local buffer for duration parsing
+                            outputBuffer += output
+                            
+                            // Print all output until we get 10 frame updates (to catch duration in different order)
+                            let shouldLog = await MainActor.run { !hasLoggedInitialOutput }
+                            if shouldLog {
+                                print("🎬 FFmpeg: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+                                
+                                // Stop logging after seeing several frame updates
+                                if output.contains("frame=") {
+                                    Task { @MainActor in
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                            self.hasLoggedInitialOutput = true
+                                            print("🎬 Stopping detailed logging after 2 seconds")
+                                        }
                                     }
                                 }
                             }
                             
-                            // Parse current time for progress
-                            if let duration = duration, let match = output.range(of: "time=") {
-                                let start = output.index(match.upperBound, offsetBy: 0)
-                                let remainingString = String(output[start...])
-                                if let spaceIndex = remainingString.firstIndex(of: " ") {
-                                    let timeStr = String(remainingString[..<spaceIndex])
-                                    if let currentTime = parseFFmpegDuration(timeStr) {
-                                        let progressValue = min(currentTime / duration, 1.0)
-                                        Task { @MainActor in
-                                            progress(progressValue)
+                            // Append to debug output (keep only last 50 lines to prevent memory issues)
+                            Task { @MainActor in
+                                debugOutput += output
+                                let lines = debugOutput.split(separator: "\n")
+                                if lines.count > 50 {
+                                    debugOutput = lines.suffix(50).joined(separator: "\n") + "\n"
+                                }
+                            }
+                            
+                            // Parse duration if not yet found (use local buffer to handle split lines)
+                            if duration == nil {
+                                if let match = outputBuffer.range(of: "Duration: ") {
+                                    let start = outputBuffer.index(match.upperBound, offsetBy: 0)
+                                    let remainingString = String(outputBuffer[start...])
+                                    // Look for the duration format (HH:MM:SS.ms) followed by comma
+                                    if let commaIndex = remainingString.firstIndex(of: ",") {
+                                        let durationStr = String(remainingString[..<commaIndex])
+                                        duration = parseFFmpegDuration(durationStr)
+                                        if let duration = duration {
+                                            print("🎬 ✅ DURATION FOUND: \(durationStr) = \(duration) seconds")
+                                        } else {
+                                            print("🎬 ❌ FAILED TO PARSE DURATION: '\(durationStr)'")
                                         }
+                                    }
+                                }
+                            }
+                            
+                            // Parse current time for progress (check both "time=" and "out_time=")
+                            if let duration = duration {
+                                var timeStr: String?
+                                
+                                // Try "out_time=" first (newer FFmpeg format)
+                                if let match = output.range(of: "out_time=") {
+                                    let start = output.index(match.upperBound, offsetBy: 0)
+                                    let remainingString = String(output[start...])
+                                    if let newlineIndex = remainingString.firstIndex(of: "\n") {
+                                        timeStr = String(remainingString[..<newlineIndex])
+                                    }
+                                }
+                                // Fallback to "time=" (older FFmpeg format)
+                                else if let match = output.range(of: "time=") {
+                                    let start = output.index(match.upperBound, offsetBy: 0)
+                                    let remainingString = String(output[start...])
+                                    if let spaceIndex = remainingString.firstIndex(of: " ") {
+                                        timeStr = String(remainingString[..<spaceIndex])
+                                    }
+                                }
+                                
+                                if let timeStr = timeStr, let currentTime = await parseFFmpegDuration(timeStr) {
+                                    let progressValue = min(currentTime / duration, 1.0)
+                                    Task { @MainActor in
+                                        progress(progressValue)
                                     }
                                 }
                             }
@@ -401,18 +542,44 @@ struct VideoConversionProgressView: View {
                 do {
                     try process.run()
                     
-                    // Check for cancellation periodically
+                    // Check for cancellation periodically with timeout
+                    var timeoutCounter = 0
+                    let maxTimeout = 9000 // 15 minute timeout (9000 * 0.1 seconds)
+                    
                     while process.isRunning {
                         if Task.isCancelled {
                             process.terminate()
                             conversionTask?.cancel()
+                            // Clear process reference
+                            Task { @MainActor in
+                                self.currentFFmpegProcess = nil
+                            }
                             continuation.resume(throwing: ConversionError.cancelled)
                             return
                         }
+                        
+                        timeoutCounter += 1
+                        if timeoutCounter > maxTimeout {
+                            print("FFmpeg timeout after 15 minutes, terminating...")
+                            process.terminate()
+                            conversionTask?.cancel()
+                            // Clear process reference
+                            Task { @MainActor in
+                                self.currentFFmpegProcess = nil
+                            }
+                            continuation.resume(throwing: ConversionError.ffmpegNotAvailable)
+                            return
+                        }
+                        
                         try await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
                     }
                     
                     conversionTask?.cancel()
+                    
+                    // Clear process reference
+                    Task { @MainActor in
+                        self.currentFFmpegProcess = nil
+                    }
                     
                     if process.terminationStatus == 0 {
                         continuation.resume()
@@ -421,6 +588,10 @@ struct VideoConversionProgressView: View {
                     }
                 } catch {
                     conversionTask?.cancel()
+                    // Clear process reference
+                    Task { @MainActor in
+                        self.currentFFmpegProcess = nil
+                    }
                     continuation.resume(throwing: error)
                 }
             }
