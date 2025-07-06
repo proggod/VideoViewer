@@ -559,31 +559,35 @@ struct FilterSidebar: View {
                 if !availableResolutions.isEmpty || isLoadingResolutions {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("Resolution")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                
-                                if isLoadingResolutions {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                        .scaleEffect(0.8)
-                                    
-                                    VStack(alignment: .leading, spacing: 0) {
-                                        if cachedCount > 0 {
-                                            Text("\(cachedCount) cached")
-                                                .font(.caption2)
-                                                .foregroundColor(.green)
-                                        }
-                                        if scanningCount > 0 {
-                                            Text("\(scanningCount) scanning")
-                                                .font(.caption2)
-                                                .foregroundColor(.orange)
-                                        }
+                            // Status indicators at the top
+                            VStack(alignment: .leading, spacing: 2) {
+                                if cachedCount > 0 {
+                                    Text("\(cachedCount) cached")
+                                        .font(.caption)
+                                        .foregroundColor(.green)
+                                        .bold()
+                                }
+                                if scanningCount > 0 {
+                                    HStack(spacing: 4) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .scaleEffect(0.7)
+                                        Text("\(scanningCount) scanning")
+                                            .font(.caption)
+                                            .foregroundColor(.orange)
+                                            .bold()
                                     }
                                 }
                             }
-                            .padding(.bottom, 4)
+                            
+                            // Small divider line
+                            Divider()
+                                .padding(.vertical, 2)
+                            
+                            Text("Resolution")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .padding(.bottom, 4)
                             
                             ForEach(Array(availableResolutions).sorted { res1, res2 in
                                 let height1 = getResolutionHeight(res1)
@@ -615,13 +619,18 @@ struct FilterSidebar: View {
         .onAppear {
             loadVideoResolutions()
         }
-        .onChange(of: directoryURL) { _, _ in
-            loadVideoResolutions()
+        .onChange(of: directoryURL) { oldValue, newValue in
+            if oldValue != newValue {
+                print("🔄 Directory changed from \(oldValue?.lastPathComponent ?? "nil") to \(newValue?.lastPathComponent ?? "nil")")
+                loadVideoResolutions()
+            }
         }
     }
     
     private func loadVideoResolutions() {
         guard let directoryURL = directoryURL else { return }
+        
+        print("🔄 loadVideoResolutions called for: \(directoryURL.lastPathComponent)")
         
         // First, load from cache
         let directoryPath = directoryURL.path
@@ -661,11 +670,6 @@ struct FilterSidebar: View {
         isLoadingResolutions = true
         
         Task {
-            // Set initial counts
-            await MainActor.run {
-                self.cachedCount = 0
-                self.scanningCount = 0
-            }
             // Get all video files in directory
             let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
             
@@ -692,14 +696,17 @@ struct FilterSidebar: View {
                 }
                 
                 // Update UI with cached data immediately
-                if !newResolutions.isEmpty {
-                    await MainActor.run {
-                        self.availableResolutions = newResolutions
-                        self.videoResolutions = newVideoResolutions
-                        self.cachedCount = newVideoResolutions.count
-                        self.scanningCount = uncachedFiles.count
-                    }
-                    print("✅ Found \(uncachedFiles.count) files without cached resolutions")
+                let initialCachedCount = newVideoResolutions.count
+                await MainActor.run {
+                    self.availableResolutions = newResolutions
+                    self.videoResolutions = newVideoResolutions
+                    self.cachedCount = initialCachedCount
+                    self.scanningCount = uncachedFiles.count
+                }
+                
+                print("📊 Resolution status - Cached: \(newVideoResolutions.count), Need scanning: \(uncachedFiles.count)")
+                if uncachedFiles.count > 0 {
+                    print("📊 Files needing scan: \(uncachedFiles.map { $0.lastPathComponent })")
                 }
                 
                 // Second pass: load uncached files in parallel (limit concurrency)
@@ -724,24 +731,32 @@ struct FilterSidebar: View {
                                     newResolutions.insert(resolution)
                                     // Cache the result
                                     ResolutionCache.shared.setResolution(resolution, for: videoFile.path, in: directoryPath)
+                                    print("✅ Scanned: \(videoFile.lastPathComponent) -> \(resolution)")
+                                } else {
+                                    // Mark failed files as "Unknown" so they don't get rescanned every time
+                                    newVideoResolutions[videoFile] = "Unknown"
+                                    newResolutions.insert("Unknown")
+                                    ResolutionCache.shared.setResolution("Unknown", for: videoFile.path, in: directoryPath)
+                                    print("❌ Failed to scan: \(videoFile.lastPathComponent)")
+                                }
+                                
+                                // Update UI immediately after each file
+                                await MainActor.run {
+                                    self.availableResolutions = newResolutions
+                                    self.videoResolutions = newVideoResolutions
+                                    self.scanningCount = max(0, self.scanningCount - 1)
+                                    self.cachedCount = self.cachedCount + 1  // Increment cached count as each file completes
                                     
-                                    // Update UI immediately after each file
-                                    await MainActor.run {
-                                        self.availableResolutions = newResolutions
-                                        self.videoResolutions = newVideoResolutions
-                                        self.scanningCount = max(0, self.scanningCount - 1)
-                                        
-                                        // Also send notification with current unsupported files
-                                        let unsupported = newVideoResolutions.filter { $0.value == "Unsupported" }.map { $0.key }
-                                        NotificationCenter.default.post(
-                                            name: Notification.Name("videoResolutionsUpdated"),
-                                            object: nil,
-                                            userInfo: [
-                                                "resolutions": newVideoResolutions,
-                                                "unsupported": Set(unsupported)
-                                            ]
-                                        )
-                                    }
+                                    // Also send notification with current unsupported files
+                                    let unsupported = newVideoResolutions.filter { $0.value == "Unsupported" }.map { $0.key }
+                                    NotificationCenter.default.post(
+                                        name: Notification.Name("videoResolutionsUpdated"),
+                                        object: nil,
+                                        userInfo: [
+                                            "resolutions": newVideoResolutions,
+                                            "unsupported": Set(unsupported)
+                                        ]
+                                    )
                                 }
                             }
                         }
