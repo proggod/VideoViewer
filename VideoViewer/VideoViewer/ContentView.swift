@@ -776,11 +776,18 @@ struct FilterSidebar: View {
         let asset = AVAsset(url: url)
         
         do {
-            let tracks = try await asset.loadTracks(withMediaType: .video)
+            // Add timeout for problematic files
+            let tracks = try await withTimeout(seconds: 5) {
+                try await asset.loadTracks(withMediaType: .video)
+            }
             guard let track = tracks.first else { return nil }
             
-            let naturalSize = try await track.load(.naturalSize)
-            let preferredTransform = try await track.load(.preferredTransform)
+            let naturalSize = try await withTimeout(seconds: 5) {
+                try await track.load(.naturalSize)
+            }
+            let preferredTransform = try await withTimeout(seconds: 5) {
+                try await track.load(.preferredTransform)
+            }
             
             let size = naturalSize.applying(preferredTransform)
             let height = Int(abs(size.height))
@@ -802,8 +809,39 @@ struct FilterSidebar: View {
                 return nil
             }
         } catch {
-            print("Error loading video resolution: \(error)")
+            // Check if it's an unsupported format error
+            if let avError = error as? AVError {
+                switch avError.code {
+                case .fileFormatNotRecognized, .mediaFormatNotSupported:
+                    print("Unsupported format: \(url.lastPathComponent)")
+                    return "Unsupported"
+                default:
+                    print("Error loading video resolution for \(url.lastPathComponent): \(error)")
+                }
+            } else {
+                print("Error loading video resolution for \(url.lastPathComponent): \(error)")
+            }
             return nil
+        }
+    }
+    
+    private func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw TimeoutError()
+            }
+            
+            guard let result = try await group.next() else {
+                throw TimeoutError()
+            }
+            
+            group.cancelAll()
+            return result
         }
     }
     
@@ -823,6 +861,8 @@ struct FilterSidebar: View {
         }
     }
 }
+
+struct TimeoutError: Error {}
 
 struct VideoListView: View {
     let directoryURL: URL
