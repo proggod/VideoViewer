@@ -492,6 +492,9 @@ struct FilterSidebar: View {
     @State private var availableResolutions: Set<String> = []
     @State private var videoResolutions: [URL: String] = [:]
     @State private var isLoadingResolutions = false
+    @State private var scanningStatus = ""
+    @State private var cachedCount = 0
+    @State private var scanningCount = 0
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -565,6 +568,19 @@ struct FilterSidebar: View {
                                     ProgressView()
                                         .controlSize(.small)
                                         .scaleEffect(0.8)
+                                    
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        if cachedCount > 0 {
+                                            Text("\(cachedCount) cached")
+                                                .font(.caption2)
+                                                .foregroundColor(.green)
+                                        }
+                                        if scanningCount > 0 {
+                                            Text("\(scanningCount) scanning")
+                                                .font(.caption2)
+                                                .foregroundColor(.orange)
+                                        }
+                                    }
                                 }
                             }
                             .padding(.bottom, 4)
@@ -635,6 +651,9 @@ struct FilterSidebar: View {
                     ]
                 )
                 
+                self.cachedCount = newVideoResolutions.count
+                self.scanningCount = uncachedFiles.count
+                
                 print("✅ Loaded \(newVideoResolutions.count) resolutions from cache for \(directoryPath)")
                 print("✅ Found \(uncachedFiles.count) files without cached resolutions")
             }
@@ -642,6 +661,13 @@ struct FilterSidebar: View {
         
         // Then load any missing resolutions asynchronously
         isLoadingResolutions = true
+        
+        // Set initial counts
+        await MainActor.run {
+            self.cachedCount = 0
+            self.scanningCount = 0
+        }
+        
         Task {
             // Get all video files in directory
             let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
@@ -703,6 +729,7 @@ struct FilterSidebar: View {
                                     await MainActor.run {
                                         self.availableResolutions = newResolutions
                                         self.videoResolutions = newVideoResolutions
+                                        self.scanningCount = max(0, self.scanningCount - 1)
                                         
                                         // Also send notification with current unsupported files
                                         let unsupported = newVideoResolutions.filter { $0.value == "Unsupported" }.map { $0.key }
