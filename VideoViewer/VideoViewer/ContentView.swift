@@ -913,6 +913,7 @@ struct VideoListView: View {
     @State private var screenshotTotal = 0
     @State private var currentScreenshotFile: String = ""
     @State private var screenshotTask: Task<Void, Never>?
+    @State private var showingMKVRemux = false
     
     let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
     
@@ -1015,6 +1016,16 @@ struct VideoListView: View {
                     .buttonStyle(.plain)
                     .help("Generate Screenshots")
                     .disabled(isGeneratingScreenshots)
+                    
+                    // MKV conversion button
+                    Button(action: {
+                        showingMKVRemux = true
+                    }) {
+                        Image(systemName: "film.stack")
+                            .font(.title3)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Convert MKV Files")
                     
                     // Filter toggle button
                     Button(action: { 
@@ -1179,6 +1190,18 @@ struct VideoListView: View {
                 onComplete: {
                     // Reload thumbnails after screenshot generation
                     loadThumbnails()
+                }
+            )
+        }
+        .sheet(isPresented: $showingMKVRemux) {
+            MKVRemuxProgressView(
+                directoryURL: directoryURL,
+                isPresented: $showingMKVRemux,
+                onComplete: {
+                    // Reload files after conversion
+                    loadVideoFiles()
+                    loadThumbnails()
+                    applyFilters()
                 }
             )
         }
