@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
-// Using built-in AVFoundation for video conversion - no external dependencies needed
+// TODO: Add SwiftFFmpeg dependency - see SWIFTFFMPEG_SETUP.md for instructions
+// import SwiftFFmpeg
 
 struct VideoConversionProgressView: View {
     let directoryURL: URL
@@ -246,28 +247,22 @@ struct VideoConversionProgressView: View {
                         
                         results.append(.success(original: videoURL, output: outputURL, method: .remuxed))
                     } else {
-                        // Use built-in AVFoundation converter
-                        print("🎬 Using AVFoundation conversion for: \(videoURL.lastPathComponent)")
+                        // Use SwiftFFmpeg for full conversion
+                        print("🎬 Using FFmpeg conversion for: \(videoURL.lastPathComponent)")
                         
                         let outputURL = videoURL.deletingPathExtension().appendingPathExtension("mp4")
-                        
-                        // Check if the converter can handle this format
-                        if VideoConverter.shared.canConvert(url: videoURL) {
-                            try await VideoConverter.shared.convertWithFallback(from: videoURL, to: outputURL) { progress in
-                                Task { @MainActor in
-                                    self.currentProgress = Double(progress)
-                                    self.updateTimeEstimate(progress: Double(progress), currentIndex: index)
-                                }
+                        try await convertWithFFmpeg(from: videoURL, to: outputURL) { progress in
+                            Task { @MainActor in
+                                self.currentProgress = progress
+                                self.updateTimeEstimate(progress: progress, currentIndex: index)
                             }
-                            
-                            // Rename original to .bak
-                            let backupURL = videoURL.appendingPathExtension("bak")
-                            try FileManager.default.moveItem(at: videoURL, to: backupURL)
-                            
-                            results.append(.success(original: videoURL, output: outputURL, method: .converted))
-                        } else {
-                            throw ConversionError.unsupportedFormat
                         }
+                        
+                        // Rename original to .bak
+                        let backupURL = videoURL.appendingPathExtension("bak")
+                        try FileManager.default.moveItem(at: videoURL, to: backupURL)
+                        
+                        results.append(.success(original: videoURL, output: outputURL, method: .converted))
                     }
                 } catch {
                     if Task.isCancelled {
@@ -305,7 +300,154 @@ struct VideoConversionProgressView: View {
         showResults = true
     }
     
-    // Video conversion is now handled by VideoConverter.swift using built-in AVFoundation
+    private func convertWithFFmpeg(from input: URL, to output: URL, progress: @escaping (Double) -> Void) async throws {
+        // Temporary implementation using system ffmpeg until SwiftFFmpeg is added
+        // Check if ffmpeg is available
+        let checkProcess = Process()
+        checkProcess.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        checkProcess.arguments = ["ffmpeg"]
+        
+        let checkPipe = Pipe()
+        checkProcess.standardOutput = checkPipe
+        checkProcess.standardError = Pipe()
+        
+        try checkProcess.run()
+        checkProcess.waitUntilExit()
+        
+        guard checkProcess.terminationStatus == 0,
+              let outputData = try? checkPipe.fileHandleForReading.readToEnd(),
+              !outputData.isEmpty else {
+            throw ConversionError.ffmpegNotAvailable
+        }
+        
+        // Run ffmpeg conversion
+        return try await withCheckedThrowingContinuation { continuation in
+            Task {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/local/bin/ffmpeg")
+                
+                // Backup with common ffmpeg locations
+                if !FileManager.default.fileExists(atPath: "/usr/local/bin/ffmpeg") {
+                    if FileManager.default.fileExists(atPath: "/opt/homebrew/bin/ffmpeg") {
+                        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
+                    } else if FileManager.default.fileExists(atPath: "/usr/bin/ffmpeg") {
+                        process.executableURL = URL(fileURLWithPath: "/usr/bin/ffmpeg")
+                    } else {
+                        continuation.resume(throwing: ConversionError.ffmpegNotAvailable)
+                        return
+                    }
+                }
+                
+                // Set up arguments for high quality conversion with hardware acceleration
+                process.arguments = [
+                    "-i", input.path,
+                    "-c:v", "libx264",       // Use H.264 video codec
+                    "-preset", "medium",      // Balance between speed and compression
+                    "-crf", "18",            // High quality (lower = better, 18 is visually lossless)
+                    "-c:a", "aac",           // Use AAC audio codec
+                    "-b:a", "192k",          // Audio bitrate
+                    "-movflags", "+faststart", // Optimize for streaming
+                    "-y",                    // Overwrite output file
+                    output.path
+                ]
+                
+                // Try hardware acceleration if available
+                if ProcessInfo.processInfo.environment["DISABLE_HW_ACCEL"] == nil {
+                    // Check for VideoToolbox support (macOS hardware acceleration)
+                    process.arguments = [
+                        "-i", input.path,
+                        "-c:v", "h264_videotoolbox",  // Hardware accelerated H.264
+                        "-b:v", "6M",                  // Video bitrate for HW encoding
+                        "-c:a", "aac",
+                        "-b:a", "192k",
+                        "-movflags", "+faststart",
+                        "-y",
+                        output.path
+                    ]
+                }
+                
+                let outputPipe = Pipe()
+                let errorPipe = Pipe()
+                process.standardOutput = outputPipe
+                process.standardError = errorPipe
+                
+                var conversionTask: Task<Void, Never>?
+                
+                // Monitor progress from stderr
+                conversionTask = Task {
+                    let errorHandle = errorPipe.fileHandleForReading
+                    var duration: Double?
+                    
+                    while !Task.isCancelled {
+                        let data = errorHandle.availableData
+                        guard !data.isEmpty else { break }
+                        
+                        if let output = String(data: data, encoding: .utf8) {
+                            // Parse duration if not yet found
+                            if duration == nil {
+                                if let match = output.range(of: "Duration: ") {
+                                    let start = output.index(match.upperBound, offsetBy: 0)
+                                    let end = output.index(start, offsetBy: 11)
+                                    let durationStr = String(output[start..<end])
+                                    duration = parseFFmpegDuration(durationStr)
+                                }
+                            }
+                            
+                            // Parse current time for progress
+                            if let duration = duration, let match = output.range(of: "time=") {
+                                let start = output.index(match.upperBound, offsetBy: 0)
+                                if let end = output.firstIndex(of: " ", after: start) {
+                                    let timeStr = String(output[start..<end])
+                                    if let currentTime = parseFFmpegDuration(timeStr) {
+                                        let progressValue = min(currentTime / duration, 1.0)
+                                        progress(progressValue)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                do {
+                    try process.run()
+                    
+                    // Check for cancellation periodically
+                    while process.isRunning {
+                        if Task.isCancelled {
+                            process.terminate()
+                            conversionTask?.cancel()
+                            continuation.resume(throwing: ConversionError.cancelled)
+                            return
+                        }
+                        try await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+                    }
+                    
+                    conversionTask?.cancel()
+                    
+                    if process.terminationStatus == 0 {
+                        continuation.resume()
+                    } else {
+                        continuation.resume(throwing: ConversionError.ffmpegNotAvailable)
+                    }
+                } catch {
+                    conversionTask?.cancel()
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+    
+    // Helper function to parse FFmpeg duration/time strings (HH:MM:SS.ms)
+    private func parseFFmpegDuration(_ timeStr: String) -> Double? {
+        let components = timeStr.split(separator: ":")
+        guard components.count == 3 else { return nil }
+        
+        guard let hours = Double(components[0]),
+              let minutes = Double(components[1]),
+              let seconds = Double(components[2]) else { return nil }
+        
+        return hours * 3600 + minutes * 60 + seconds
+    }
     
     private func updateTimeEstimate(progress: Double, currentIndex: Int) {
         guard let startTime = startTime, progress > 0 else { return }
@@ -341,13 +483,13 @@ enum ConversionMethod {
 }
 
 enum ConversionError: LocalizedError {
-    case unsupportedFormat
+    case ffmpegNotAvailable
     case cancelled
     
     var errorDescription: String? {
         switch self {
-        case .unsupportedFormat:
-            return "This video format cannot be converted. Only MKV files with compatible codecs can be remuxed."
+        case .ffmpegNotAvailable:
+            return "Full video conversion not yet available. Only MKV files with compatible codecs can be converted."
         case .cancelled:
             return "Conversion was cancelled"
         }
@@ -358,5 +500,14 @@ enum ConversionError: LocalizedError {
 extension Array {
     subscript(safe index: Index) -> Element? {
         return indices.contains(index) ? self[index] : nil
+    }
+}
+
+// Extension for string searching
+extension String {
+    func firstIndex(of character: Character, after index: String.Index) -> String.Index? {
+        guard index < endIndex else { return nil }
+        let searchRange = self.index(after: index)..<endIndex
+        return self[searchRange].firstIndex(of: character)
     }
 }
