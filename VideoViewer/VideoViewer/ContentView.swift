@@ -697,6 +697,17 @@ struct FilterSidebar: View {
                                     await MainActor.run {
                                         self.availableResolutions = newResolutions
                                         self.videoResolutions = newVideoResolutions
+                                        
+                                        // Also send notification with current unsupported files
+                                        let unsupported = newVideoResolutions.filter { $0.value == "Unsupported" }.map { $0.key }
+                                        NotificationCenter.default.post(
+                                            name: Notification.Name("videoResolutionsUpdated"),
+                                            object: nil,
+                                            userInfo: [
+                                                "resolutions": newVideoResolutions,
+                                                "unsupported": Set(unsupported)
+                                            ]
+                                        )
                                     }
                                 }
                             }
@@ -711,10 +722,14 @@ struct FilterSidebar: View {
                     self.videoResolutions = newVideoResolutions
                     
                     // Store resolutions for use in VideoListView
+                    let unsupported = newVideoResolutions.filter { $0.value == "Unsupported" }.map { $0.key }
                     NotificationCenter.default.post(
                         name: Notification.Name("videoResolutionsUpdated"),
                         object: nil,
-                        userInfo: ["resolutions": newVideoResolutions]
+                        userInfo: [
+                            "resolutions": newVideoResolutions,
+                            "unsupported": Set(unsupported)
+                        ]
                     )
                 }
             } catch {
@@ -878,6 +893,7 @@ struct VideoListView: View {
     @State private var thumbnails: [URL: NSImage] = [:]
     @State private var thumbnailSize: Double = UserDefaults.standard.double(forKey: "thumbnailSize") == 0 ? 150 : UserDefaults.standard.double(forKey: "thumbnailSize")
     @State private var videoResolutions: [URL: String] = [:]
+    @State private var unsupportedFiles: Set<URL> = []
     @StateObject private var categoryManager = CategoryManager.shared
     @State private var showingDeleteAlert = false
     @State private var videoToDelete: URL?
@@ -937,6 +953,22 @@ struct VideoListView: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(Color.blue.opacity(0.1))
+                        .cornerRadius(6)
+                    }
+                    
+                    // Unsupported files indicator
+                    if !unsupportedFiles.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "xmark.circle")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                            Text("\(unsupportedFiles.count) Unsupported")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.red.opacity(0.1))
                         .cornerRadius(6)
                     }
                 }
@@ -1062,7 +1094,8 @@ struct VideoListView: View {
                                     size: thumbnailSize,
                                     editingVideo: $editingVideo,
                                     editingText: $editingText,
-                                    onRename: renameVideo
+                                    onRename: renameVideo,
+                                    isUnsupported: unsupportedFiles.contains(videoURL)
                                 )
                                 .onTapGesture(count: 2) {
                                     if editingVideo == nil {
@@ -1088,7 +1121,8 @@ struct VideoListView: View {
                             thumbnail: thumbnails[videoURL],
                             editingVideo: $editingVideo,
                             editingText: $editingText,
-                            onRename: renameVideo
+                            onRename: renameVideo,
+                            isUnsupported: unsupportedFiles.contains(videoURL)
                         )
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) {
@@ -1163,6 +1197,9 @@ struct VideoListView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("videoResolutionsUpdated"))) { notification in
             if let resolutions = notification.userInfo?["resolutions"] as? [URL: String] {
                 videoResolutions = resolutions
+                if let unsupported = notification.userInfo?["unsupported"] as? Set<URL> {
+                    unsupportedFiles = unsupported
+                }
                 applyFilters()
             }
         }
@@ -1554,12 +1591,13 @@ struct VideoListRow: View {
     @Binding var editingVideo: URL?
     @Binding var editingText: String
     let onRename: (URL, String) -> Void
+    let isUnsupported: Bool
     @StateObject private var categoryManager = CategoryManager.shared
     @State private var hasCategories: Bool = false
     
     var body: some View {
         HStack {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 if let thumbnail = thumbnail {
                     Image(nsImage: thumbnail)
                         .resizable()
@@ -1572,17 +1610,36 @@ struct VideoListRow: View {
                         .frame(width: 60, height: 34)
                 }
                 
-                // Green checkmark if video has categories
+                // Red X overlay for unsupported files
+                if isUnsupported {
+                    ZStack {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 20, height: 20)
+                        
+                        Image(systemName: "xmark")
+                            .foregroundColor(.white)
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                }
+                
+                // Green checkmark if video has categories (bottom right)
                 if hasCategories {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 16, height: 16)
-                        .overlay(
-                            Image(systemName: "checkmark")
-                                .foregroundColor(.white)
-                                .font(.system(size: 8, weight: .bold))
-                        )
-                        .offset(x: 5, y: 5)
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 16, height: 16)
+                                .overlay(
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.white)
+                                        .font(.system(size: 8, weight: .bold))
+                                )
+                                .offset(x: 5, y: 5)
+                        }
+                    }
                 }
             }
             
@@ -1637,12 +1694,13 @@ struct VideoGridItem: View {
     @Binding var editingVideo: URL?
     @Binding var editingText: String
     let onRename: (URL, String) -> Void
+    let isUnsupported: Bool
     @StateObject private var categoryManager = CategoryManager.shared
     @State private var hasCategories: Bool = false
     
     var body: some View {
         VStack(spacing: 8) {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 if let thumbnail = thumbnail {
                     Image(nsImage: thumbnail)
                         .resizable()
@@ -1661,17 +1719,36 @@ struct VideoGridItem: View {
                         )
                 }
                 
-                // Green checkmark if video has categories
+                // Red X overlay for unsupported files
+                if isUnsupported {
+                    ZStack {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 32, height: 32)
+                        
+                        Image(systemName: "xmark")
+                            .foregroundColor(.white)
+                            .font(.system(size: 16, weight: .bold))
+                    }
+                }
+                
+                // Green checkmark if video has categories (bottom right)
                 if hasCategories {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 24, height: 24)
-                        .overlay(
-                            Image(systemName: "checkmark")
-                                .foregroundColor(.white)
-                                .font(.system(size: 12, weight: .bold))
-                        )
-                        .padding(8)
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 24, height: 24)
+                                .overlay(
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.white)
+                                        .font(.system(size: 12, weight: .bold))
+                                )
+                                .padding(8)
+                        }
+                    }
                 }
             }
             
