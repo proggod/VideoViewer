@@ -1407,6 +1407,10 @@ struct VideoListView: View {
             loadThumbnails()
             applyFilters()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("categoriesUpdated"))) { _ in
+            // Refresh the filtered list when categories are updated
+            applyFilters()
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("thumbnailCreated"))) { notification in
             // Update just the specific thumbnail that was created
             if let videoURL = notification.userInfo?["videoURL"] as? URL,
