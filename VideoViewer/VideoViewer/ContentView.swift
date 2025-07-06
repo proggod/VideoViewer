@@ -673,9 +673,10 @@ struct FilterSidebar: View {
                 
                 // Second pass: load uncached files in parallel (limit concurrency)
                 if !uncachedFiles.isEmpty {
-                    // Process in batches of 5 to avoid overwhelming the system
-                    for i in stride(from: 0, to: uncachedFiles.count, by: 5) {
-                        let batch = Array(uncachedFiles[i..<min(i + 5, uncachedFiles.count)])
+                    // Process in smaller batches of 3 for network drives to reduce load
+                    let batchSize = isNetworkPath(directoryURL) ? 3 : 5
+                    for i in stride(from: 0, to: uncachedFiles.count, by: batchSize) {
+                        let batch = Array(uncachedFiles[i..<min(i + batchSize, uncachedFiles.count)])
                         
                         await withTaskGroup(of: (URL, String?).self) { group in
                             for videoFile in batch {
@@ -711,6 +712,11 @@ struct FilterSidebar: View {
                                     }
                                 }
                             }
+                        }
+                        
+                        // Add small delay between batches for network drives
+                        if isNetworkPath(directoryURL) && i + batchSize < uncachedFiles.count {
+                            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
                         }
                     }
                 }
@@ -791,16 +797,17 @@ struct FilterSidebar: View {
         let asset = AVAsset(url: url)
         
         do {
-            // Add timeout for problematic files
-            let tracks = try await withTimeout(seconds: 5) {
+            // Shorter timeout for network files to fail faster
+            let timeoutSeconds: TimeInterval = url.path.hasPrefix("/Volumes/") ? 3 : 5
+            let tracks = try await withTimeout(seconds: timeoutSeconds) {
                 try await asset.loadTracks(withMediaType: .video)
             }
             guard let track = tracks.first else { return nil }
             
-            let naturalSize = try await withTimeout(seconds: 5) {
+            let naturalSize = try await withTimeout(seconds: timeoutSeconds) {
                 try await track.load(.naturalSize)
             }
-            let preferredTransform = try await withTimeout(seconds: 5) {
+            let preferredTransform = try await withTimeout(seconds: timeoutSeconds) {
                 try await track.load(.preferredTransform)
             }
             
