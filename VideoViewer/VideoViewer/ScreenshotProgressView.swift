@@ -217,6 +217,7 @@ struct ScreenshotProgressView: View {
                     try? pngData.write(to: thumbnailURL)
                     
                     // Post notification for just this specific video file
+                    print("📸 Posting thumbnailCreated notification for: \(videoFile.lastPathComponent)")
                     NotificationCenter.default.post(
                         name: Notification.Name("thumbnailCreated"),
                         object: nil,

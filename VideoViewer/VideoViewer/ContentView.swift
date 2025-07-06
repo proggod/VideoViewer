@@ -638,22 +638,6 @@ struct FilterSidebar: View {
         // First, load from cache
         let directoryPath = directoryURL.path
         
-        // Clean up any "Unknown" entries in the cache - these should be rescanned as "Unsupported"
-        var hasUnknownEntries = false
-        if let cachedResolutions = ResolutionCache.shared.getResolutions(for: directoryPath) {
-            for (path, resolution) in cachedResolutions {
-                if resolution == "Unknown" {
-                    hasUnknownEntries = true
-                    print("🧹 Found 'Unknown' cache entry that needs cleanup: \(URL(fileURLWithPath: path).lastPathComponent)")
-                }
-            }
-        }
-        
-        // If we found "Unknown" entries, clear the entire cache for this directory to force a rescan
-        if hasUnknownEntries {
-            print("🧹 Clearing resolution cache for directory to remove 'Unknown' entries")
-            ResolutionCache.shared.clearCache(for: directoryPath)
-        }
         
         if let cachedResolutions = ResolutionCache.shared.getResolutions(for: directoryPath) {
             var newResolutions: Set<String> = []
@@ -2445,14 +2429,14 @@ struct VideoPlayerContent: View {
             NSSound.beep()
             print("Camera sound played (system beep)")
             
-            // Invalidate the cached thumbnail for this specific video
-            if let cachedURL = getCachedThumbnailURL(for: videoURL) {
-                try? FileManager.default.removeItem(at: cachedURL)
-                print("Invalidated cached thumbnail for: \(videoURL.lastPathComponent)")
-            }
-            
-            // Notify to refresh thumbnails
-            NotificationCenter.default.post(name: .refreshThumbnails, object: nil)
+            // Update thumbnail in UI directly using our new notification system
+            let thumbnail = nsImage
+            NotificationCenter.default.post(
+                name: Notification.Name("thumbnailCreated"),
+                object: nil,
+                userInfo: ["videoURL": videoURL, "thumbnail": thumbnail]
+            )
+            print("📸 Posted thumbnailCreated notification for: \(videoURL.lastPathComponent)")
         } catch {
             print("Error saving thumbnail: \(error)")
             
