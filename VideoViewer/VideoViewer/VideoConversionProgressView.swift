@@ -25,6 +25,10 @@ struct VideoConversionProgressView: View {
     @State private var currentFileStartTime: Date?
     @State private var debugOutput = ""
     
+    // Quality settings
+    @State private var videoQuality: Double = 15 // CRF: 15-30 (lower is better)
+    @State private var audioQuality: Double = 320 // Bitrate: 128-320 kbps
+    
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -80,6 +84,68 @@ struct VideoConversionProgressView: View {
                     Text("Original files will be saved with .bak extension")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                    
+                    // Quality Settings
+                    VStack(spacing: 16) {
+                        // Video Quality Slider
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Video Quality")
+                                    .font(.headline)
+                                Spacer()
+                                Text("CRF: \(Int(videoQuality))")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            HStack {
+                                Text("Higher")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Slider(value: $videoQuality, in: 15...30, step: 1)
+                                Text("Lower")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Text(videoQualityDescription)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding()
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(8)
+                        
+                        // Audio Quality Slider
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Audio Quality")
+                                    .font(.headline)
+                                Spacer()
+                                Text("\(Int(audioQuality)) kbps")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            HStack {
+                                Text("128")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Slider(value: $audioQuality, in: 128...320, step: 32)
+                                Text("320")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Text(audioQualityDescription)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding()
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(8)
+                    }
+                    .padding(.horizontal)
                     
                     Button(action: startConversion) {
                         Label("Start Conversion", systemImage: "play.fill")
@@ -271,6 +337,28 @@ struct VideoConversionProgressView: View {
         }
     }
     
+    private var videoQualityDescription: String {
+        switch Int(videoQuality) {
+        case 15: return "Maximum quality (larger files, slower)"
+        case 16...18: return "Excellent quality (visually lossless)"
+        case 19...22: return "Very good quality (recommended)"
+        case 23...25: return "Good quality (smaller files)"
+        case 26...30: return "Acceptable quality (fastest, smallest)"
+        default: return ""
+        }
+    }
+    
+    private var audioQualityDescription: String {
+        switch Int(audioQuality) {
+        case 320: return "Maximum quality (CD quality)"
+        case 256: return "Very high quality"
+        case 192: return "High quality (recommended)"
+        case 160: return "Good quality"
+        case 128: return "Acceptable quality (smallest)"
+        default: return ""
+        }
+    }
+    
     private func loadVideosToConvert() {
         // Filter videos that can be converted
         let convertibleExtensions = ["mkv", "wmv", "avi", "mpg", "mpeg", "mov", "m4v", "3gp", "3g2"]
@@ -399,15 +487,16 @@ struct VideoConversionProgressView: View {
                 }
                 process.executableURL = URL(fileURLWithPath: ffmpegPath)
                 
-                // Set up arguments for high quality conversion with hardware acceleration
+                // Set up arguments based on quality slider settings
+                let preset = videoQuality <= 18 ? "veryslow" : (videoQuality <= 22 ? "slow" : "medium")
                 process.arguments = [
                     "-i", input.path,
                     "-c:v", "libx264",       // Use H.264 video codec
                     "-progress", "pipe:2",   // Output progress to stderr
-                    "-preset", "medium",      // Balance between speed and compression
-                    "-crf", "18",            // High quality (lower = better, 18 is visually lossless)
+                    "-preset", preset,       // Speed/quality tradeoff based on CRF
+                    "-crf", String(Int(videoQuality)), // Quality from slider
                     "-c:a", "aac",           // Use AAC audio codec
-                    "-b:a", "192k",          // Audio bitrate
+                    "-b:a", "\(Int(audioQuality))k", // Audio bitrate from slider
                     "-movflags", "+faststart", // Optimize for streaming
                     "-y",                    // Overwrite output file
                     output.path
@@ -416,13 +505,20 @@ struct VideoConversionProgressView: View {
                 // Try hardware acceleration if available
                 if ProcessInfo.processInfo.environment["DISABLE_HW_ACCEL"] == nil {
                     // Check for VideoToolbox support (macOS hardware acceleration)
+                    // Map CRF to bitrate for hardware encoding (CRF 15-30 -> 12M-3M)
+                    let videoBitrate = Int(12.0 - ((videoQuality - 15) * 0.6))
+                    let maxRate = Int(Double(videoBitrate) * 1.25)
+                    let bufSize = videoBitrate * 2
+                    
                     process.arguments = [
                         "-i", input.path,
                         "-c:v", "h264_videotoolbox",  // Hardware accelerated H.264
                         "-progress", "pipe:2",         // Output progress to stderr
-                        "-b:v", "6M",                  // Video bitrate for HW encoding
+                        "-b:v", "\(videoBitrate)M",   // Video bitrate based on quality slider
+                        "-maxrate", "\(maxRate)M",     // Maximum bitrate ceiling
+                        "-bufsize", "\(bufSize)M",     // Buffer size for rate control
                         "-c:a", "aac",
-                        "-b:a", "192k",
+                        "-b:a", "\(Int(audioQuality))k", // Audio bitrate from slider
                         "-movflags", "+faststart",
                         "-y",
                         output.path

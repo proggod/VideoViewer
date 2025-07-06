@@ -321,6 +321,9 @@ struct DirectoryRow: View {
     @State private var isExpanded = false
     
     var body: some View {
+        let isSelected = selectedURL == item.url
+        let isInSelectedPath = selectedURL?.path.hasPrefix(item.url.path) ?? false
+        
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 if item.isDirectory && item.isReadable {
@@ -352,9 +355,20 @@ struct DirectoryRow: View {
                 
                 Text(getDisplayName(for: item.url))
                     .foregroundColor(item.isReadable ? .primary : .secondary)
+                    .fontWeight(isSelected ? .semibold : .regular)
                 
                 Spacer()
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(isSelected ? Color.accentColor.opacity(0.2) : (isInSelectedPath ? Color.accentColor.opacity(0.05) : Color.clear))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
+            )
             .contentShape(Rectangle())
             .onTapGesture {
                 selectedURL = item.url
@@ -601,6 +615,33 @@ struct FilterSidebar: View {
                                 }
                                 .toggleStyle(CheckboxToggleStyle())
                             }
+                            
+                            // Add separator before Non-categorized option
+                            Divider()
+                                .padding(.vertical, 4)
+                            
+                            // Non-categorized filter
+                            Toggle(isOn: Binding(
+                                get: { selectedCategories.contains(-1) },
+                                set: { isSelected in
+                                    if isSelected {
+                                        selectedCategories.insert(-1)
+                                    } else {
+                                        selectedCategories.remove(-1)
+                                    }
+                                }
+                            )) {
+                                HStack {
+                                    Image(systemName: "questionmark.folder")
+                                        .foregroundColor(.orange)
+                                        .font(.caption)
+                                    Text("Non-categorized")
+                                        .lineLimit(1)
+                                        .font(.caption)
+                                        .italic()
+                                }
+                            }
+                            .toggleStyle(CheckboxToggleStyle())
                         }
                         .padding(.horizontal)
                     }
@@ -1396,10 +1437,29 @@ struct VideoListView: View {
         
         // Filter by categories
         if !selectedCategories.isEmpty {
+            // Check if non-categorized filter is selected
+            let includeNonCategorized = selectedCategories.contains(-1)
+            let regularCategories = selectedCategories.filter { $0 != -1 }
+            
             filtered = filtered.filter { videoURL in
                 let videoCategories = categoryManager.getCategoriesForVideo(videoPath: videoURL.path)
-                // Check if video has ALL of the selected categories (AND logic)
-                return selectedCategories.isSubset(of: videoCategories)
+                
+                // If only non-categorized is selected
+                if regularCategories.isEmpty && includeNonCategorized {
+                    return videoCategories.isEmpty
+                }
+                
+                // If non-categorized is selected along with other categories
+                if includeNonCategorized && videoCategories.isEmpty {
+                    return true
+                }
+                
+                // Check if video has ALL of the selected regular categories (AND logic)
+                if !regularCategories.isEmpty {
+                    return regularCategories.isSubset(of: videoCategories)
+                }
+                
+                return false
             }
         }
         

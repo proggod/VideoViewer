@@ -35,8 +35,10 @@ A native macOS video browser and player application built with SwiftUI, designed
 - **Smart filtering** - Filter videos by:
   - Multiple categories (OR logic)
   - Video resolution (4K, 1080p, 720p, etc.)
+  - **Non-categorized videos** - Special filter to find videos without any categories
 - **Visual indicators** - Green checkmarks on thumbnails show categorized videos
 - **Bulk operations** - Apply categories to videos quickly with checkbox grids
+- **Directory highlighting** - Currently selected folder is highlighted in the tree view
 
 ### File Management
 - **Batch cleanup system** - Advanced filename cleanup with:
@@ -49,13 +51,15 @@ A native macOS video browser and player application built with SwiftUI, designed
 - **Video format conversion** - Convert various formats to MP4:
   - Fast remuxing for MKV files with H.264/H.265 codecs
   - Full conversion support for WMV, AVI, MOV, MPG, MPEG, M4V, 3GP and more
+  - **Quality sliders** - Adjust video quality (CRF 15-30) and audio bitrate (128-320 kbps)
+  - **Maximum quality by default** - Sliders start at highest quality settings
   - Self-contained FFmpeg binary (152MB universal Intel/ARM64) - no installation needed
   - Hardware acceleration via VideoToolbox when available
   - Live FFmpeg terminal output with real-time debugging
   - Accurate per-file time estimation and progress tracking
   - 15-minute timeout protection against stuck conversions
   - Stop button to cancel conversions at any time
-  - Original files automatically backed up with .bak extension
+  - **Auto-cleanup** - Successfully converted files have .bak files automatically deleted
 - **Batch screenshot generation** - Create thumbnails automatically:
   - Generates screenshots at random times (1-2 minutes into video)
   - Only processes videos without existing thumbnails
@@ -105,12 +109,18 @@ git clone [repository-url]
 cd VideoViewer
 ```
 
-2. Open the project in Xcode:
+2. Set up FFmpeg for video conversion (optional):
+```bash
+./setup_ffmpeg.sh
+```
+This downloads and creates a universal FFmpeg binary (Intel + ARM64).
+
+3. Open the project in Xcode:
 ```bash
 open VideoViewer.xcodeproj
 ```
 
-3. Build and run (⌘R)
+4. Build and run (⌘R)
 
 ## Usage
 
@@ -128,7 +138,8 @@ open VideoViewer.xcodeproj
 ### Filtering Videos
 1. Click the filter icon to show/hide the filter panel
 2. Check categories and/or resolutions to filter the video list
-3. Use "Clear All" to reset filters quickly
+3. Use the "Non-categorized" filter to find videos without any categories assigned
+4. Use "Clear All" to reset filters quickly
 
 ### Video Player Features
 - Click the camera icon to capture a screenshot
@@ -138,6 +149,7 @@ open VideoViewer.xcodeproj
 
 ### Video Conversion Features
 - Automatically detects convertible video formats in the current directory
+- **Quality controls** - Adjust video quality (CRF) and audio bitrate before conversion
 - Tries fast remuxing first for compatible MKV files (seconds vs minutes)
 - Falls back to full FFmpeg conversion for other formats or incompatible codecs
 - Live terminal output shows exactly what FFmpeg is doing
@@ -145,7 +157,7 @@ open VideoViewer.xcodeproj
 - Hardware acceleration automatically enabled when supported
 - 15-minute timeout prevents infinite hangs on problematic files
 - Stop button immediately terminates conversion process
-- Original files safely backed up before conversion
+- Successful conversions automatically delete .bak files (failed conversions keep backups)
 
 ## Data Storage
 
