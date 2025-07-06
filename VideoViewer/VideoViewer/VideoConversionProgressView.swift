@@ -488,15 +488,15 @@ struct VideoConversionProgressView: View {
                 process.executableURL = URL(fileURLWithPath: ffmpegPath)
                 
                 // Set up arguments based on quality slider settings
-                let preset = videoQuality <= 18 ? "veryslow" : (videoQuality <= 22 ? "slow" : "medium")
-                process.arguments = [
+                let preset = await videoQuality <= 18 ? "veryslow" : (videoQuality <= 22 ? "slow" : "medium")
+                process.arguments = await [
                     "-i", input.path,
                     "-c:v", "libx264",       // Use H.264 video codec
                     "-progress", "pipe:2",   // Output progress to stderr
                     "-preset", preset,       // Speed/quality tradeoff based on CRF
                     "-crf", String(Int(videoQuality)), // Quality from slider
                     "-c:a", "aac",           // Use AAC audio codec
-                    "-b:a", "\(Int(audioQuality))k", // Audio bitrate from slider
+                    "-b:a", "\(await Int(audioQuality))k", // Audio bitrate from slider
                     "-movflags", "+faststart", // Optimize for streaming
                     "-y",                    // Overwrite output file
                     output.path
@@ -506,7 +506,7 @@ struct VideoConversionProgressView: View {
                 if ProcessInfo.processInfo.environment["DISABLE_HW_ACCEL"] == nil {
                     // Check for VideoToolbox support (macOS hardware acceleration)
                     // Map CRF to bitrate for hardware encoding (CRF 15-30 -> 12M-3M)
-                    let videoBitrate = Int(12.0 - ((videoQuality - 15) * 0.6))
+                    let videoBitrate = await Int(12.0 - ((videoQuality - 15) * 0.6))
                     let maxRate = Int(Double(videoBitrate) * 1.25)
                     let bufSize = videoBitrate * 2
                     
@@ -518,7 +518,7 @@ struct VideoConversionProgressView: View {
                         "-maxrate", "\(maxRate)M",     // Maximum bitrate ceiling
                         "-bufsize", "\(bufSize)M",     // Buffer size for rate control
                         "-c:a", "aac",
-                        "-b:a", "\(Int(audioQuality))k", // Audio bitrate from slider
+                        "-b:a", "\(await Int(audioQuality))k", // Audio bitrate from slider
                         "-movflags", "+faststart",
                         "-y",
                         output.path
@@ -593,7 +593,7 @@ struct VideoConversionProgressView: View {
                                     // Look for the duration format (HH:MM:SS.ms) followed by comma
                                     if let commaIndex = remainingString.firstIndex(of: ",") {
                                         let durationStr = String(remainingString[..<commaIndex])
-                                        duration = parseFFmpegDuration(durationStr)
+                                        duration = await parseFFmpegDuration(durationStr)
                                         if let duration = duration {
                                             print("🎬 ✅ DURATION FOUND: \(durationStr) = \(duration) seconds")
                                         } else {
