@@ -215,6 +215,13 @@ struct ScreenshotProgressView: View {
                    let bitmapImage = NSBitmapImageRep(data: tiffData),
                    let pngData = bitmapImage.representation(using: .png, properties: [:]) {
                     try? pngData.write(to: thumbnailURL)
+                    
+                    // Post notification for just this specific video file
+                    NotificationCenter.default.post(
+                        name: Notification.Name("thumbnailCreated"),
+                        object: nil,
+                        userInfo: ["videoURL": videoFile, "thumbnail": screenshot]
+                    )
                 }
             }
             
@@ -227,8 +234,8 @@ struct ScreenshotProgressView: View {
         await MainActor.run {
             isProcessing = false
             
-            // Refresh thumbnails
-            NotificationCenter.default.post(name: .refreshThumbnails, object: nil)
+            // Don't post any refresh notifications - individual thumbnails are already
+            // updated via the thumbnailCreated notification
             
             onComplete()
             isPresented = false

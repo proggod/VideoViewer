@@ -586,8 +586,8 @@ struct FilterSidebar: View {
                                 
                                 if isLoadingResolutions {
                                     ProgressView()
-                                        .controlSize(.small)
-                                        .scaleEffect(0.7)
+                                        .controlSize(.mini)
+                                        .frame(width: 12, height: 12)
                                 }
                             }
                             .padding(.bottom, 4)
@@ -637,6 +637,23 @@ struct FilterSidebar: View {
         
         // First, load from cache
         let directoryPath = directoryURL.path
+        
+        // Clean up any "Unknown" entries in the cache - these should be rescanned as "Unsupported"
+        var hasUnknownEntries = false
+        if let cachedResolutions = ResolutionCache.shared.getResolutions(for: directoryPath) {
+            for (path, resolution) in cachedResolutions {
+                if resolution == "Unknown" {
+                    hasUnknownEntries = true
+                    print("🧹 Found 'Unknown' cache entry that needs cleanup: \(URL(fileURLWithPath: path).lastPathComponent)")
+                }
+            }
+        }
+        
+        // If we found "Unknown" entries, clear the entire cache for this directory to force a rescan
+        if hasUnknownEntries {
+            print("🧹 Clearing resolution cache for directory to remove 'Unknown' entries")
+            ResolutionCache.shared.clearCache(for: directoryPath)
+        }
         
         if let cachedResolutions = ResolutionCache.shared.getResolutions(for: directoryPath) {
             var newResolutions: Set<String> = []
@@ -1274,7 +1291,10 @@ struct VideoListView: View {
             applyFilters()
         }
         .onReceive(NotificationCenter.default.publisher(for: .refreshThumbnails)) { _ in
-            loadThumbnails()
+            // Only reload thumbnails if we don't have any loaded yet
+            if thumbnails.isEmpty {
+                loadThumbnails()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("videoResolutionsUpdated"))) { notification in
             if let resolutions = notification.userInfo?["resolutions"] as? [URL: String] {
@@ -1289,6 +1309,23 @@ struct VideoListView: View {
             loadVideoFiles()
             loadThumbnails()
             applyFilters()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("thumbnailCreated"))) { notification in
+            // Update just the specific thumbnail that was created
+            if let videoURL = notification.userInfo?["videoURL"] as? URL,
+               let thumbnail = notification.userInfo?["thumbnail"] as? NSImage {
+                // Update the UI immediately
+                thumbnails[videoURL] = thumbnail
+                
+                // Cache it locally if it's a network drive (in background)
+                if isNetworkPath(directoryURL) {
+                    DispatchQueue.global(qos: .background).async {
+                        self.cacheThumbnail(thumbnail, for: videoURL)
+                    }
+                }
+                
+                print("✅ Updated thumbnail for: \(videoURL.lastPathComponent)")
+            }
         }
     }
     
@@ -1402,39 +1439,73 @@ struct VideoListView: View {
         
         if isNetworkDrive {
             print("Loading thumbnails from network drive: \(directoryURL.path)")
-        }
-        
-        var cachedCount = 0
-        var networkLoadCount = 0
-        
-        for videoURL in localVideoFiles {
-            let videoName = videoURL.deletingPathExtension().lastPathComponent.lowercased()
-            let thumbnailURL = videoInfoURL.appendingPathComponent("\(videoName).png")
-            
-            if isNetworkDrive {
-                // For network drives, try to load from local cache first
-                if let cachedImage = loadCachedThumbnail(for: videoURL) {
-                    thumbnails[videoURL] = cachedImage
-                    cachedCount += 1
-                } else if FileManager.default.fileExists(atPath: thumbnailURL.path),
-                          let image = NSImage(contentsOf: thumbnailURL) {
-                    // Load from network and cache locally
-                    thumbnails[videoURL] = image
-                    cacheThumbnail(image, for: videoURL)
-                    networkLoadCount += 1
+            // For network drives, load thumbnails asynchronously to avoid beach ball
+            Task {
+                var cachedCount = 0
+                var networkLoadCount = 0
+                
+                for videoURL in localVideoFiles {
+                    if let thumbnail = await loadSingleThumbnail(for: videoURL) {
+                        await MainActor.run {
+                            self.thumbnails[videoURL] = thumbnail
+                        }
+                        if loadCachedThumbnail(for: videoURL) != nil {
+                            cachedCount += 1
+                        } else {
+                            networkLoadCount += 1
+                        }
+                    }
                 }
-            } else {
-                // For local drives, load directly
-                if FileManager.default.fileExists(atPath: thumbnailURL.path),
-                   let image = NSImage(contentsOf: thumbnailURL) {
-                    thumbnails[videoURL] = image
+                
+                if cachedCount > 0 || networkLoadCount > 0 {
+                    print("Network drive thumbnails - Cached: \(cachedCount), Loaded from network: \(networkLoadCount)")
+                }
+            }
+        } else {
+            // For local drives, load synchronously (fast)
+            for videoURL in localVideoFiles {
+                if let thumbnail = loadSingleThumbnailSync(for: videoURL) {
+                    thumbnails[videoURL] = thumbnail
                 }
             }
         }
-        
-        if isNetworkDrive && (cachedCount > 0 || networkLoadCount > 0) {
-            print("Network drive thumbnails - Cached: \(cachedCount), Loaded from network: \(networkLoadCount)")
+    }
+    
+    private func loadSingleThumbnail(for videoURL: URL) async -> NSImage? {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let thumbnail = self.loadSingleThumbnailSync(for: videoURL)
+                continuation.resume(returning: thumbnail)
+            }
         }
+    }
+    
+    private func loadSingleThumbnailSync(for videoURL: URL) -> NSImage? {
+        let videoInfoURL = directoryURL.appendingPathComponent(".video_info")
+        let videoName = videoURL.deletingPathExtension().lastPathComponent.lowercased()
+        let thumbnailURL = videoInfoURL.appendingPathComponent("\(videoName).png")
+        
+        let isNetworkDrive = isNetworkPath(directoryURL)
+        
+        if isNetworkDrive {
+            // For network drives, try to load from local cache first
+            if let cachedImage = loadCachedThumbnail(for: videoURL) {
+                return cachedImage
+            } else if FileManager.default.fileExists(atPath: thumbnailURL.path),
+                      let image = NSImage(contentsOf: thumbnailURL) {
+                // Load from network and cache locally
+                cacheThumbnail(image, for: videoURL)
+                return image
+            }
+        } else {
+            // For local drives, load directly
+            if FileManager.default.fileExists(atPath: thumbnailURL.path),
+               let image = NSImage(contentsOf: thumbnailURL) {
+                return image
+            }
+        }
+        
+        return nil
     }
     
     private func isNetworkPath(_ url: URL) -> Bool {
@@ -1557,12 +1628,13 @@ struct VideoListView: View {
             // Remove from database (all category associations)
             // This happens automatically due to the video path no longer existing
             
-            // Remove from resolution cache
-            ResolutionCache.shared.clearCache(for: directoryURL.path)
+            // Remove just this file from the local state - no need to reload everything
+            localVideoFiles.removeAll { $0 == videoURL }
+            videoFiles = localVideoFiles
+            thumbnails.removeValue(forKey: videoURL)
+            videoResolutions.removeValue(forKey: videoURL)
             
-            // Reload files and update UI
-            loadVideoFiles()
-            loadThumbnails()
+            // Apply filters to update the view
             applyFilters()
             
             // Clear the deletion reference
