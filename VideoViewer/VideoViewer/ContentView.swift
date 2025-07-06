@@ -268,15 +268,6 @@ struct SimpleBrowser: View {
                         expandedPaths: $expandedPaths
                     )
                 }
-                
-                // Add mounted volumes
-                ForEach(getMountedVolumes(), id: \.url) { item in
-                    DirectoryRow(
-                        item: item, 
-                        selectedURL: $selectedURL,
-                        expandedPaths: $expandedPaths
-                    )
-                }
             }
             .id(refreshTrigger)
         }
@@ -308,10 +299,6 @@ struct SimpleBrowser: View {
         expandedPaths.formUnion(pathsToExpand)
     }
     
-    private func getMountedVolumes() -> [FileItem] {
-        let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
-        return volumes.filter { $0.path != "/" }.map { FileItem(url: $0) }
-    }
 }
 
 struct DirectoryRow: View {
