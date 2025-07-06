@@ -674,7 +674,7 @@ struct FilterSidebar: View {
                 // Second pass: load uncached files in parallel (limit concurrency)
                 if !uncachedFiles.isEmpty {
                     // Process in smaller batches of 3 for network drives to reduce load
-                    let batchSize = isNetworkPath(directoryURL) ? 3 : 5
+                    let batchSize = directoryURL.path.hasPrefix("/Volumes/") ? 3 : 5
                     for i in stride(from: 0, to: uncachedFiles.count, by: batchSize) {
                         let batch = Array(uncachedFiles[i..<min(i + batchSize, uncachedFiles.count)])
                         
@@ -715,7 +715,7 @@ struct FilterSidebar: View {
                         }
                         
                         // Add small delay between batches for network drives
-                        if isNetworkPath(directoryURL) && i + batchSize < uncachedFiles.count {
+                        if directoryURL.path.hasPrefix("/Volumes/") && i + batchSize < uncachedFiles.count {
                             try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
                         }
                     }
