@@ -568,15 +568,10 @@ struct FilterSidebar: View {
                                         .bold()
                                 }
                                 if scanningCount > 0 {
-                                    HStack(spacing: 4) {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                            .scaleEffect(0.7)
-                                        Text("\(scanningCount) scanning")
-                                            .font(.caption)
-                                            .foregroundColor(.orange)
-                                            .bold()
-                                    }
+                                    Text("\(scanningCount) scanning")
+                                        .font(.caption)
+                                        .foregroundColor(.orange)
+                                        .bold()
                                 }
                             }
                             
@@ -584,10 +579,18 @@ struct FilterSidebar: View {
                             Divider()
                                 .padding(.vertical, 2)
                             
-                            Text("Resolution")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                                .padding(.bottom, 4)
+                            HStack(spacing: 4) {
+                                Text("Resolution")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                
+                                if isLoadingResolutions {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .scaleEffect(0.7)
+                                }
+                            }
+                            .padding(.bottom, 4)
                             
                             ForEach(Array(availableResolutions).sorted { res1, res2 in
                                 let height1 = getResolutionHeight(res1)
