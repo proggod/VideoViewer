@@ -978,7 +978,14 @@ struct VideoListView: View {
                             .foregroundColor(.blue)
                     }
                     .buttonStyle(.plain)
-                    .help("Grant Folder Access")
+                    .help(Text("Grant access to protected folders (Documents, Downloads, etc."))
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.pointingHand.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
                     
                     // Network drive indicator
                     if isNetworkPath(directoryURL) {
@@ -994,6 +1001,7 @@ struct VideoListView: View {
                         .padding(.vertical, 4)
                         .background(Color.blue.opacity(0.1))
                         .cornerRadius(6)
+                        .help("This folder is on a network drive. Performance may be slower.")
                     }
                     
                     // Unsupported files indicator
@@ -1010,6 +1018,7 @@ struct VideoListView: View {
                         .padding(.vertical, 4)
                         .background(Color.red.opacity(0.1))
                         .cornerRadius(6)
+                        .help("\(unsupportedFiles.count) files have unsupported codecs and cannot be played. Use Convert MKV to fix compatible files.")
                     }
                 }
                 
@@ -1025,7 +1034,7 @@ struct VideoListView: View {
                             .font(.title3)
                     }
                     .buttonStyle(.plain)
-                    .help("Refresh Directory")
+                    .help(Text("Refresh Directory - Rescan for new files"))
                     
                     // Cleanup button
                     Button(action: { 
@@ -1035,7 +1044,7 @@ struct VideoListView: View {
                             .font(.title3)
                     }
                     .buttonStyle(.plain)
-                    .help("Cleanup Filenames")
+                    .help(Text("Cleanup Filenames - Batch rename files with search/replace rules"))
                     
                     // Screenshot generation button
                     Button(action: {
@@ -1046,7 +1055,7 @@ struct VideoListView: View {
                             .foregroundColor(isGeneratingScreenshots ? .secondary : .primary)
                     }
                     .buttonStyle(.plain)
-                    .help("Generate Screenshots")
+                    .help(Text("Generate Screenshots - Create thumbnails for videos without them"))
                     .disabled(isGeneratingScreenshots)
                     
                     // MKV conversion button
@@ -1057,7 +1066,7 @@ struct VideoListView: View {
                             .font(.title3)
                     }
                     .buttonStyle(.plain)
-                    .help("Convert MKV Files")
+                    .help(Text("Convert MKV Files - Convert compatible MKV files to MP4"))
                     
                     // Filter toggle button
                     Button(action: { 
@@ -1069,7 +1078,7 @@ struct VideoListView: View {
                             .font(.title3)
                     }
                     .buttonStyle(.plain)
-                    .help(showFilters ? "Hide Filters" : "Show Filters")
+                    .help(Text(showFilters ? "Hide Filters - Hide category and resolution filters" : "Show Filters - Show category and resolution filters"))
                     
                     // View toggle button
                     Button(action: { 
@@ -1080,7 +1089,7 @@ struct VideoListView: View {
                             .font(.title3)
                     }
                     .buttonStyle(.plain)
-                    .help(isGridView ? "Switch to List View" : "Switch to Grid View")
+                    .help(Text(isGridView ? "Switch to List View - Compact list of videos" : "Switch to Grid View - Thumbnail grid of videos"))
                 }
             }
             .padding()
