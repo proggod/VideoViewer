@@ -736,10 +736,10 @@ struct FilterSidebar: View {
                                     ResolutionCache.shared.setResolution(resolution, for: videoFile.path, in: directoryPath)
                                     print("✅ Scanned: \(videoFile.lastPathComponent) -> \(resolution)")
                                 } else {
-                                    // Mark failed files as "Unknown" so they don't get rescanned every time
-                                    newVideoResolutions[videoFile] = "Unknown"
-                                    newResolutions.insert("Unknown")
-                                    ResolutionCache.shared.setResolution("Unknown", for: videoFile.path, in: directoryPath)
+                                    // Mark failed files as "Unsupported" so they don't get rescanned every time
+                                    newVideoResolutions[videoFile] = "Unsupported"
+                                    newResolutions.insert("Unsupported")
+                                    ResolutionCache.shared.setResolution("Unsupported", for: videoFile.path, in: directoryPath)
                                     print("❌ Failed to scan: \(videoFile.lastPathComponent)")
                                 }
                                 
