@@ -132,6 +132,10 @@ struct CleanupPreviewView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                         
+                        Text("Duplicate files with same size will be deleted")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        
                         if selectedLimit != -1 && totalMatches > selectedLimit {
                             Text("Process remaining \(totalMatches - selectedLimit) files after these")
                                 .font(.caption)
@@ -224,6 +228,7 @@ struct CleanupPreviewView: View {
         
         Task {
             var successCount = 0
+            var duplicatesRemoved = 0
             var failureCount = 0
             
             for (index, change) in previewChanges.enumerated() {
@@ -247,8 +252,46 @@ struct CleanupPreviewView: View {
                     
                     // Check if destination already exists
                     if FileManager.default.fileExists(atPath: change.cleaned.path) {
-                        print("❌ ERROR: Destination file already exists: \(change.cleaned.lastPathComponent)")
-                        failureCount += 1
+                        print("⚠️ WARNING: Destination file already exists: \(change.cleaned.lastPathComponent)")
+                        
+                        // Compare file sizes
+                        do {
+                            let originalAttrs = try FileManager.default.attributesOfItem(atPath: change.original.path)
+                            let destAttrs = try FileManager.default.attributesOfItem(atPath: change.cleaned.path)
+                            
+                            let originalSize = originalAttrs[.size] as? Int64 ?? 0
+                            let destSize = destAttrs[.size] as? Int64 ?? 0
+                            
+                            print("Original size: \(originalSize) bytes")
+                            print("Destination size: \(destSize) bytes")
+                            
+                            if originalSize == destSize && originalSize > 0 {
+                                print("Files are same size - removing duplicate original file")
+                                
+                                // Delete the original file since it's a duplicate
+                                try FileManager.default.removeItem(at: change.original)
+                                print("✅ DUPLICATE REMOVED: Deleted \(change.original.lastPathComponent)")
+                                
+                                // Also remove its thumbnail if it exists
+                                let videoInfoURL = directoryURL.appendingPathComponent(".video_info")
+                                let originalThumbName = change.original.deletingPathExtension().lastPathComponent.lowercased()
+                                let originalThumbURL = videoInfoURL.appendingPathComponent("\(originalThumbName).png")
+                                
+                                if FileManager.default.fileExists(atPath: originalThumbURL.path) {
+                                    try? FileManager.default.removeItem(at: originalThumbURL)
+                                    print("Also removed duplicate thumbnail")
+                                }
+                                
+                                duplicatesRemoved += 1
+                            } else {
+                                print("❌ ERROR: Files have different sizes, not removing")
+                                print("Please manually resolve this duplicate")
+                                failureCount += 1
+                            }
+                        } catch {
+                            print("❌ ERROR comparing files: \(error)")
+                            failureCount += 1
+                        }
                         continue
                     }
                     
@@ -310,22 +353,35 @@ struct CleanupPreviewView: View {
                 print("\n=== CLEANUP SUMMARY ===")
                 print("Total files to process: \(previewChanges.count)")
                 print("Successfully renamed: \(successCount)")
-                print("Failed to rename: \(failureCount)")
+                print("Duplicates removed: \(duplicatesRemoved)")
+                print("Failed to process: \(failureCount)")
+                
+                let totalSuccess = successCount + duplicatesRemoved
                 
                 if failureCount > 0 {
-                    print("⚠️ Cleanup completed with errors: \(successCount) succeeded, \(failureCount) failed")
+                    print("⚠️ Cleanup completed with errors: \(totalSuccess) succeeded (\(successCount) renamed, \(duplicatesRemoved) duplicates removed), \(failureCount) failed")
                     
                     // Show alert about failures
                     let alert = NSAlert()
-                    alert.messageText = "Some files could not be renamed"
-                    alert.informativeText = "\(successCount) files renamed successfully, \(failureCount) failed. Check the console for details."
+                    alert.messageText = "Cleanup completed with some errors"
+                    alert.informativeText = "• \(successCount) files renamed\n• \(duplicatesRemoved) duplicate files removed\n• \(failureCount) files failed\n\nCheck the console for details."
                     alert.alertStyle = .warning
                     alert.addButton(withTitle: "OK")
                     alert.runModal()
-                } else if successCount == 0 {
-                    print("⚠️ No files were renamed")
+                } else if totalSuccess == 0 {
+                    print("⚠️ No files were processed")
                 } else {
-                    print("✅ Cleanup completed: \(successCount) files renamed successfully")
+                    print("✅ Cleanup completed successfully!")
+                    print("   - Files renamed: \(successCount)")
+                    print("   - Duplicates removed: \(duplicatesRemoved)")
+                    
+                    // Show success alert
+                    let alert = NSAlert()
+                    alert.messageText = "Cleanup completed successfully"
+                    alert.informativeText = "• \(successCount) files renamed\n• \(duplicatesRemoved) duplicate files removed"
+                    alert.alertStyle = .informational
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
                 }
             }
         }
