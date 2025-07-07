@@ -1481,9 +1481,31 @@ struct VideoListView: View {
         let fileManager = FileManager.default
         do {
             let contents = try fileManager.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
-            return contents.filter { url in
+            let videoFiles = contents.filter { url in
                 videoExtensions.contains(url.pathExtension.lowercased())
-            }.sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+            }
+            
+            // Remove duplicates by preferring MP4 versions over originals
+            var deduplicatedFiles: [URL] = []
+            var fileBasenames: Set<String> = []
+            
+            // First pass: Add all MP4 files
+            for url in videoFiles where url.pathExtension.lowercased() == "mp4" {
+                let basename = url.deletingPathExtension().lastPathComponent
+                deduplicatedFiles.append(url)
+                fileBasenames.insert(basename)
+            }
+            
+            // Second pass: Add non-MP4 files only if no MP4 version exists
+            for url in videoFiles where url.pathExtension.lowercased() != "mp4" {
+                let basename = url.deletingPathExtension().lastPathComponent
+                if !fileBasenames.contains(basename) {
+                    deduplicatedFiles.append(url)
+                    fileBasenames.insert(basename)
+                }
+            }
+            
+            return deduplicatedFiles.sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
         } catch let error as NSError {
             print("Error reading directory: \(error)")
             
