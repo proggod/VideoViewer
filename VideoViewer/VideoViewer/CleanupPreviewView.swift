@@ -234,15 +234,34 @@ struct CleanupPreviewView: View {
                 }
                 
                 do {
-                    // Check if destination already exists
-                    if FileManager.default.fileExists(atPath: change.cleaned.path) {
-                        print("Destination file already exists: \(change.cleaned.lastPathComponent)")
+                    print("\n=== RENAME ATTEMPT ===")
+                    print("Original: \(change.original.path)")
+                    print("Cleaned:  \(change.cleaned.path)")
+                    
+                    // Check if source file exists
+                    if !FileManager.default.fileExists(atPath: change.original.path) {
+                        print("❌ ERROR: Source file does not exist!")
                         failureCount += 1
                         continue
                     }
                     
+                    // Check if destination already exists
+                    if FileManager.default.fileExists(atPath: change.cleaned.path) {
+                        print("❌ ERROR: Destination file already exists: \(change.cleaned.lastPathComponent)")
+                        failureCount += 1
+                        continue
+                    }
+                    
+                    // Check permissions
+                    let isWritable = FileManager.default.isWritableFile(atPath: change.original.path)
+                    let parentDirWritable = FileManager.default.isWritableFile(atPath: change.original.deletingLastPathComponent().path)
+                    print("Source file writable: \(isWritable)")
+                    print("Parent directory writable: \(parentDirWritable)")
+                    
                     // Rename the file
+                    print("Attempting rename...")
                     try FileManager.default.moveItem(at: change.original, to: change.cleaned)
+                    print("✅ SUCCESS: File renamed!")
                     
                     // Update thumbnail if it exists
                     let videoInfoURL = directoryURL.appendingPathComponent(".video_info")
@@ -253,12 +272,20 @@ struct CleanupPreviewView: View {
                     let cleanedThumbURL = videoInfoURL.appendingPathComponent("\(cleanedThumbName).png")
                     
                     if FileManager.default.fileExists(atPath: originalThumbURL.path) {
+                        print("Renaming thumbnail: \(originalThumbName).png -> \(cleanedThumbName).png")
                         try? FileManager.default.moveItem(at: originalThumbURL, to: cleanedThumbURL)
                     }
                     
                     successCount += 1
                 } catch {
-                    print("Error renaming file: \(error)")
+                    print("❌ ERROR renaming file: \(error)")
+                    print("Error type: \(type(of: error))")
+                    print("Error localized: \(error.localizedDescription)")
+                    if let nsError = error as NSError? {
+                        print("Error code: \(nsError.code)")
+                        print("Error domain: \(nsError.domain)")
+                        print("Error userInfo: \(nsError.userInfo)")
+                    }
                     failureCount += 1
                 }
                 
@@ -280,10 +307,25 @@ struct CleanupPreviewView: View {
                 onComplete()
                 isPresented = false
                 
+                print("\n=== CLEANUP SUMMARY ===")
+                print("Total files to process: \(previewChanges.count)")
+                print("Successfully renamed: \(successCount)")
+                print("Failed to rename: \(failureCount)")
+                
                 if failureCount > 0 {
-                    print("Cleanup completed: \(successCount) succeeded, \(failureCount) failed")
+                    print("⚠️ Cleanup completed with errors: \(successCount) succeeded, \(failureCount) failed")
+                    
+                    // Show alert about failures
+                    let alert = NSAlert()
+                    alert.messageText = "Some files could not be renamed"
+                    alert.informativeText = "\(successCount) files renamed successfully, \(failureCount) failed. Check the console for details."
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+                } else if successCount == 0 {
+                    print("⚠️ No files were renamed")
                 } else {
-                    print("Cleanup completed: \(successCount) files renamed successfully")
+                    print("✅ Cleanup completed: \(successCount) files renamed successfully")
                 }
             }
         }

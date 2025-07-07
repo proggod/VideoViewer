@@ -378,9 +378,6 @@ class CleanupManager: ObservableObject {
                 print("✓ Changed: '\(originalName)' -> '\(cleanedName)'")
                 let cleanedURL = url.deletingLastPathComponent().appendingPathComponent(cleanedName)
                 allResults.append((original: url, cleaned: cleanedURL))
-            } else if rules.filter({ $0.isEnabled }).count > 0 {
-                // Log files that didn't change despite having rules
-                print("✗ No change: '\(originalName)'")
             }
         }
         
