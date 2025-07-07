@@ -1464,7 +1464,9 @@ struct VideoListView: View {
             }
         }
         
-        filteredVideoFiles = filtered
+        // Final deduplication step to ensure no duplicates make it to ForEach
+        let uniqueFiltered = Array(Set(filtered))
+        filteredVideoFiles = uniqueFiltered.sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
     }
     
     private func getDisplayName(for url: URL) -> String {
