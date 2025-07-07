@@ -230,8 +230,13 @@ struct CleanupPreviewView: View {
             var successCount = 0
             var duplicatesRemoved = 0
             var failureCount = 0
+            var skipAllConflicts = false
             
             for (index, change) in previewChanges.enumerated() {
+                if skipAllConflicts {
+                    failureCount += 1
+                    continue
+                }
                 // Update progress on main thread
                 await MainActor.run {
                     currentFileName = change.original.lastPathComponent
@@ -284,9 +289,117 @@ struct CleanupPreviewView: View {
                                 
                                 duplicatesRemoved += 1
                             } else {
-                                print("❌ ERROR: Files have different sizes, not removing")
-                                print("Please manually resolve this duplicate")
-                                failureCount += 1
+                                print("⚠️ Files have different sizes")
+                                
+                                // Format file sizes for display
+                                let formatter = ByteCountFormatter()
+                                formatter.allowedUnits = [.useAll]
+                                formatter.countStyle = .file
+                                let originalSizeStr = formatter.string(fromByteCount: originalSize)
+                                let destSizeStr = formatter.string(fromByteCount: destSize)
+                                
+                                // Ask user what to do
+                                let userChoice = await MainActor.run { () -> String in
+                                    let alert = NSAlert()
+                                    alert.messageText = "Duplicate files with different sizes"
+                                    alert.informativeText = """
+                                    Found two files with similar names but different sizes:
+                                    
+                                    Original: \(change.original.lastPathComponent)
+                                    Size: \(originalSizeStr)
+                                    
+                                    Existing: \(change.cleaned.lastPathComponent)
+                                    Size: \(destSizeStr)
+                                    
+                                    What would you like to do?
+                                    """
+                                    alert.alertStyle = .warning
+                                    
+                                    alert.addButton(withTitle: "Keep Both")
+                                    alert.addButton(withTitle: "Delete Original (\(originalSizeStr))")
+                                    alert.addButton(withTitle: "Delete Existing (\(destSizeStr))")
+                                    alert.addButton(withTitle: "Skip All Similar")
+                                    
+                                    let response = alert.runModal()
+                                    switch response {
+                                    case .alertFirstButtonReturn:
+                                        return "keep"
+                                    case .alertSecondButtonReturn:
+                                        return "delete_original"
+                                    case .alertThirdButtonReturn:
+                                        return "delete_existing"
+                                    default:
+                                        return "skip_all"
+                                    }
+                                }
+                                
+                                switch userChoice {
+                                case "delete_original":
+                                    // Delete the original file
+                                    do {
+                                        try FileManager.default.removeItem(at: change.original)
+                                        print("✅ USER CHOICE: Deleted original \(change.original.lastPathComponent)")
+                                        
+                                        // Also remove its thumbnail
+                                        let videoInfoURL = directoryURL.appendingPathComponent(".video_info")
+                                        let originalThumbName = change.original.deletingPathExtension().lastPathComponent.lowercased()
+                                        let originalThumbURL = videoInfoURL.appendingPathComponent("\(originalThumbName).png")
+                                        
+                                        if FileManager.default.fileExists(atPath: originalThumbURL.path) {
+                                            try? FileManager.default.removeItem(at: originalThumbURL)
+                                            print("Also removed original's thumbnail")
+                                        }
+                                        
+                                        duplicatesRemoved += 1
+                                    } catch {
+                                        print("❌ ERROR deleting original: \(error)")
+                                        failureCount += 1
+                                    }
+                                    
+                                case "delete_existing":
+                                    // Delete the existing file and then rename
+                                    do {
+                                        try FileManager.default.removeItem(at: change.cleaned)
+                                        print("Deleted existing file")
+                                        
+                                        // Also remove its thumbnail
+                                        let videoInfoURL = directoryURL.appendingPathComponent(".video_info")
+                                        let cleanedThumbName = change.cleaned.deletingPathExtension().lastPathComponent.lowercased()
+                                        let cleanedThumbURL = videoInfoURL.appendingPathComponent("\(cleanedThumbName).png")
+                                        
+                                        if FileManager.default.fileExists(atPath: cleanedThumbURL.path) {
+                                            try? FileManager.default.removeItem(at: cleanedThumbURL)
+                                            print("Also removed existing file's thumbnail")
+                                        }
+                                        
+                                        // Now rename the original
+                                        try FileManager.default.moveItem(at: change.original, to: change.cleaned)
+                                        print("✅ USER CHOICE: Replaced with original")
+                                        
+                                        // Update thumbnail
+                                        let originalThumbName = change.original.deletingPathExtension().lastPathComponent.lowercased()
+                                        let originalThumbURL = videoInfoURL.appendingPathComponent("\(originalThumbName).png")
+                                        
+                                        if FileManager.default.fileExists(atPath: originalThumbURL.path) {
+                                            try? FileManager.default.moveItem(at: originalThumbURL, to: cleanedThumbURL)
+                                        }
+                                        
+                                        successCount += 1
+                                    } catch {
+                                        print("❌ ERROR replacing file: \(error)")
+                                        failureCount += 1
+                                    }
+                                    
+                                case "skip_all":
+                                    // Skip all remaining files
+                                    print("User chose to skip all remaining conflicts")
+                                    skipAllConflicts = true
+                                    failureCount += 1
+                                    
+                                default: // "keep"
+                                    print("User chose to keep both files")
+                                    failureCount += 1
+                                }
                             }
                         } catch {
                             print("❌ ERROR comparing files: \(error)")
