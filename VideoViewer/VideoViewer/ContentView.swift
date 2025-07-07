@@ -2289,7 +2289,7 @@ class VideoPlayerContentTracker: ObservableObject {
 
 struct VideoPlayerContent: View {
     let videoURL: URL
-    @State private var player: AVPlayer
+    @State private var player: AVPlayer?
     @State private var isCapturing: Bool = false
     @StateObject private var playerObserver = PlayerObserver()
     @State private var volumeCheckTimer: Timer?
@@ -2300,9 +2300,15 @@ struct VideoPlayerContent: View {
     
     init(videoURL: URL) {
         self.videoURL = videoURL
-        // Initialize player in init instead of onAppear
+        // Don't create player in init - wait for onAppear to avoid metadata race conditions
+        self._player = State(initialValue: nil)
+        print("VideoPlayerContent init for: \(videoURL.lastPathComponent)")
+    }
+    
+    private func createPlayer() {
+        guard player == nil else { return }
+        
         let newPlayer = AVPlayer(url: videoURL)
-        self._player = State(initialValue: newPlayer)
         
         // Restore last saved volume and mute state
         if UserDefaults.standard.object(forKey: "lastVideoVolume") != nil {
@@ -2314,63 +2320,48 @@ struct VideoPlayerContent: View {
         // Restore mute state
         newPlayer.isMuted = UserDefaults.standard.bool(forKey: "lastVideoMuted")
         
-        print("Initialized player with volume: \(newPlayer.volume), muted: \(newPlayer.isMuted)")
+        player = newPlayer
+        print("Created player with volume: \(newPlayer.volume), muted: \(newPlayer.isMuted)")
     }
     
     var body: some View {
         VStack(spacing: 0) {
-            VideoPlayer(player: player)
-                .onAppear {
-                    player.play()
-                    
-                    // Load categories for this video
-                    selectedCategories = categoryManager.getCategoriesForVideo(videoPath: videoURL.path)
-                    
-                    // Start a timer to periodically check volume and mute state
-                    activeTimerCount += 1
-                    print("Starting timer, active count: \(activeTimerCount)")
-                    
-                    volumeCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
-                        let currentVolume = player.volume
-                        let currentMuted = player.isMuted
+            if let player = player {
+                VideoPlayer(player: player)
+                    .onAppear {
+                        player.play()
                         
-                        // Check if volume or mute state changed
-                        if currentVolume != UserDefaults.standard.float(forKey: "lastVideoVolume") ||
-                           currentMuted != UserDefaults.standard.bool(forKey: "lastVideoMuted") {
-                            // Only log state changes, not every timer tick
-                            playerObserver.saveCurrentState(volume: currentVolume, isMuted: currentMuted)
+                        // Load categories for this video
+                        selectedCategories = categoryManager.getCategoriesForVideo(videoPath: videoURL.path)
+                        
+                        // Start a timer to periodically check volume and mute state
+                        activeTimerCount += 1
+                        print("Starting timer, active count: \(activeTimerCount)")
+                        
+                        volumeCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+                            let currentVolume = player.volume
+                            let currentMuted = player.isMuted
+                            
+                            // Check if volume or mute state changed
+                            if currentVolume != UserDefaults.standard.float(forKey: "lastVideoVolume") ||
+                               currentMuted != UserDefaults.standard.bool(forKey: "lastVideoMuted") {
+                                // Only log state changes, not every timer tick
+                                playerObserver.saveCurrentState(volume: currentVolume, isMuted: currentMuted)
+                            }
                         }
                     }
+            } else {
+                // Loading state while player is being created
+                VStack {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle())
+                    Text("Loading video...")
+                        .foregroundColor(.secondary)
+                        .padding(.top)
                 }
-                .onDisappear {
-                    print("=== VideoPlayer onDisappear START ===")
-                    
-                    // Stop timer immediately
-                    if let timer = volumeCheckTimer {
-                        timer.invalidate()
-                        volumeCheckTimer = nil
-                        activeTimerCount -= 1
-                        print("Timer invalidated, active count: \(activeTimerCount)")
-                    } else {
-                        print("No timer to invalidate")
-                    }
-                    
-                    // Save current state before closing
-                    playerObserver.saveCurrentState(volume: player.volume, isMuted: player.isMuted)
-                    print("Final volume: \(player.volume), muted: \(player.isMuted)")
-                    
-                    // Force stop playback
-                    print("Stopping playback...")
-                    player.pause()
-                    player.seek(to: .zero)
-                    player.rate = 0
-                    player.replaceCurrentItem(with: nil)
-                    
-                    // Clear all player references
-                    print("Clearing player references")
-                    
-                    print("=== VideoPlayer onDisappear END ===")
-                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+            }
             
             // Bottom toolbar
             VStack(spacing: 0) {
@@ -2487,11 +2478,48 @@ struct VideoPlayerContent: View {
             }
         }
         .background(Color.black)
+        .onAppear {
+            // Create player safely on main thread when view appears
+            createPlayer()
+        }
+        .onDisappear {
+            print("=== VideoPlayer onDisappear START ===")
+            
+            // Stop timer immediately
+            if let timer = volumeCheckTimer {
+                timer.invalidate()
+                volumeCheckTimer = nil
+                activeTimerCount -= 1
+                print("Timer invalidated, active count: \(activeTimerCount)")
+            } else {
+                print("No timer to invalidate")
+            }
+            
+            // Only cleanup player if it exists
+            if let player = player {
+                // Save current state before closing
+                playerObserver.saveCurrentState(volume: player.volume, isMuted: player.isMuted)
+                print("Final volume: \(player.volume), muted: \(player.isMuted)")
+                
+                // Force stop playback
+                print("Stopping playback...")
+                player.pause()
+                player.seek(to: .zero)
+                player.rate = 0
+                player.replaceCurrentItem(with: nil)
+            }
+            
+            // Clear all player references
+            print("Clearing player references")
+            self.player = nil
+            
+            print("=== VideoPlayer onDisappear END ===")
+        }
     }
     
     
     private func generateThumbnail() {
-        guard let currentItem = player.currentItem else { return }
+        guard let player = player, let currentItem = player.currentItem else { return }
         
         let asset = currentItem.asset
         let imageGenerator = AVAssetImageGenerator(asset: asset)
