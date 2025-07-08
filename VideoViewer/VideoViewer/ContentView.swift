@@ -89,6 +89,7 @@ struct ContentView: View {
     @State private var selectedFilterCategories: Set<Int> = []
     @State private var selectedResolutions: Set<String> = []
     @State private var showFilters = true
+    @State private var videoMetadata: [URL: VideoMetadata] = [:]
     
     var body: some View {
         VStack(spacing: 0) {
@@ -497,18 +498,27 @@ struct DirectoryRow: View {
 }
 
 // Resolution cache manager
-class ResolutionCache {
-    static let shared = ResolutionCache()
-    private let cacheKey = "videoResolutionCache"
-    private var cache: [String: [String: String]] = [:] // [directoryPath: [videoPath: resolution]]
+// Video metadata structure
+struct VideoMetadata: Codable {
+    let resolution: String
+    let duration: TimeInterval?
+    let fileSize: Int64?
+}
+
+class VideoMetadataCache {
+    static let shared = VideoMetadataCache()
+    private let cacheKey = "videoMetadataCache"
+    private var cache: [String: [String: VideoMetadata]] = [:] // [directoryPath: [videoPath: metadata]]
     
     private init() {
         loadCache()
+        // Migrate old resolution cache if needed
+        migrateOldCache()
     }
     
     private func loadCache() {
         if let data = UserDefaults.standard.data(forKey: cacheKey),
-           let decoded = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
+           let decoded = try? JSONDecoder().decode([String: [String: VideoMetadata]].self, from: data) {
             cache = decoded
         }
     }
@@ -519,25 +529,73 @@ class ResolutionCache {
         }
     }
     
-    func getResolution(for videoPath: String, in directoryPath: String) -> String? {
+    private func migrateOldCache() {
+        // Migrate from old ResolutionCache format
+        if let oldData = UserDefaults.standard.data(forKey: "videoResolutionCache"),
+           let oldCache = try? JSONDecoder().decode([String: [String: String]].self, from: oldData) {
+            for (dir, videos) in oldCache {
+                if cache[dir] == nil {
+                    cache[dir] = [:]
+                }
+                for (path, resolution) in videos {
+                    if cache[dir]?[path] == nil {
+                        cache[dir]?[path] = VideoMetadata(resolution: resolution, duration: nil, fileSize: nil)
+                    }
+                }
+            }
+            saveCache()
+            // Remove old cache
+            UserDefaults.standard.removeObject(forKey: "videoResolutionCache")
+        }
+    }
+    
+    func getMetadata(for videoPath: String, in directoryPath: String) -> VideoMetadata? {
         return cache[directoryPath]?[videoPath]
     }
     
-    func setResolution(_ resolution: String, for videoPath: String, in directoryPath: String) {
+    func setMetadata(_ metadata: VideoMetadata, for videoPath: String, in directoryPath: String) {
         if cache[directoryPath] == nil {
             cache[directoryPath] = [:]
         }
-        cache[directoryPath]?[videoPath] = resolution
+        cache[directoryPath]?[videoPath] = metadata
         saveCache()
     }
     
-    func getResolutions(for directoryPath: String) -> [String: String]? {
+    func getAllMetadata(for directoryPath: String) -> [String: VideoMetadata]? {
         return cache[directoryPath]
     }
     
     func clearCache(for directoryPath: String) {
         cache.removeValue(forKey: directoryPath)
         saveCache()
+    }
+}
+
+// Keep ResolutionCache for backward compatibility
+class ResolutionCache {
+    static let shared = ResolutionCache()
+    
+    func getResolution(for videoPath: String, in directoryPath: String) -> String? {
+        return VideoMetadataCache.shared.getMetadata(for: videoPath, in: directoryPath)?.resolution
+    }
+    
+    func setResolution(_ resolution: String, for videoPath: String, in directoryPath: String) {
+        let existing = VideoMetadataCache.shared.getMetadata(for: videoPath, in: directoryPath)
+        let metadata = VideoMetadata(resolution: resolution, duration: existing?.duration, fileSize: existing?.fileSize)
+        VideoMetadataCache.shared.setMetadata(metadata, for: videoPath, in: directoryPath)
+    }
+    
+    func getResolutions(for directoryPath: String) -> [String: String]? {
+        guard let allMetadata = VideoMetadataCache.shared.getAllMetadata(for: directoryPath) else { return nil }
+        var resolutions: [String: String] = [:]
+        for (path, metadata) in allMetadata {
+            resolutions[path] = metadata.resolution
+        }
+        return resolutions
+    }
+    
+    func clearCache(for directoryPath: String) {
+        VideoMetadataCache.shared.clearCache(for: directoryPath)
     }
 }
 
@@ -585,22 +643,47 @@ struct FilterSidebar: View {
                                 .foregroundColor(.secondary)
                                 .padding(.bottom, 4)
                             
-                            ForEach(categoryManager.categories) { category in
-                                Toggle(isOn: Binding(
-                                    get: { selectedCategories.contains(category.id) },
-                                    set: { isSelected in
-                                        if isSelected {
-                                            selectedCategories.insert(category.id)
-                                        } else {
-                                            selectedCategories.remove(category.id)
+                            // Show ungrouped categories first
+                            let ungroupedCategories = categoryManager.getUngroupedCategories()
+                            if !ungroupedCategories.isEmpty {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Ungrouped")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .padding(.top, 4)
+                                    
+                                    ForEach(ungroupedCategories) { category in
+                                        categoryFilterToggle(category: category)
+                                    }
+                                }
+                            }
+                            
+                            // Show grouped categories
+                            ForEach(categoryManager.categoryGroups) { group in
+                                let groupCategories = categoryManager.getCategoriesInGroup(groupId: group.id)
+                                if !groupCategories.isEmpty {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack {
+                                            Image(systemName: group.allowMultiple ? "folder.badge.plus" : "folder.badge.minus")
+                                                .foregroundColor(group.allowMultiple ? .blue : .orange)
+                                                .font(.caption)
+                                            
+                                            Text(group.name)
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                            
+                                            Text(group.allowMultiple ? "(Multiple)" : "(Single)")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .italic()
+                                        }
+                                        .padding(.top, 4)
+                                        
+                                        ForEach(groupCategories) { category in
+                                            categoryFilterToggle(category: category)
                                         }
                                     }
-                                )) {
-                                    Text(category.name)
-                                        .lineLimit(1)
-                                        .font(.caption)
                                 }
-                                .toggleStyle(CheckboxToggleStyle())
                             }
                             
                             // Add separator before Non-categorized option
@@ -724,14 +807,14 @@ struct FilterSidebar: View {
         let directoryPath = directoryURL.path
         
         
-        if let cachedResolutions = ResolutionCache.shared.getResolutions(for: directoryPath) {
+        if let cachedMetadata = VideoMetadataCache.shared.getAllMetadata(for: directoryPath) {
             var newResolutions: Set<String> = []
             var newVideoResolutions: [URL: String] = [:]
             
-            for (videoPath, resolution) in cachedResolutions {
+            for (videoPath, metadata) in cachedMetadata {
                 let videoURL = URL(fileURLWithPath: videoPath)
-                newVideoResolutions[videoURL] = resolution
-                newResolutions.insert(resolution)
+                newVideoResolutions[videoURL] = metadata.resolution
+                newResolutions.insert(metadata.resolution)
             }
             
             if !newResolutions.isEmpty {
@@ -751,7 +834,7 @@ struct FilterSidebar: View {
                 
                 self.cachedCount = newVideoResolutions.count
                 
-                print("✅ Loaded \(newVideoResolutions.count) resolutions from cache for \(directoryPath)")
+                print("✅ Loaded \(newVideoResolutions.count) metadata entries from cache for \(directoryPath)")
             }
         }
         
@@ -776,9 +859,9 @@ struct FilterSidebar: View {
                 for videoFile in videoFiles {
                     let videoPath = videoFile.path
                     
-                    if let cachedResolution = ResolutionCache.shared.getResolution(for: videoPath, in: directoryPath) {
-                        newVideoResolutions[videoFile] = cachedResolution
-                        newResolutions.insert(cachedResolution)
+                    if let cachedMetadata = VideoMetadataCache.shared.getMetadata(for: videoPath, in: directoryPath) {
+                        newVideoResolutions[videoFile] = cachedMetadata.resolution
+                        newResolutions.insert(cachedMetadata.resolution)
                     } else {
                         uncachedFiles.append(videoFile)
                     }
@@ -805,27 +888,28 @@ struct FilterSidebar: View {
                     for i in stride(from: 0, to: uncachedFiles.count, by: batchSize) {
                         let batch = Array(uncachedFiles[i..<min(i + batchSize, uncachedFiles.count)])
                         
-                        await withTaskGroup(of: (URL, String?).self) { group in
+                        await withTaskGroup(of: (URL, VideoMetadata?).self) { group in
                             for videoFile in batch {
                                 group.addTask {
-                                    let resolution = await self.getVideoResolutionAsync(for: videoFile)
-                                    return (videoFile, resolution)
+                                    let metadata = await self.getVideoMetadataAsync(for: videoFile)
+                                    return (videoFile, metadata)
                                 }
                             }
                             
                             // Update UI immediately as each file completes
-                            for await (videoFile, resolution) in group {
-                                if let resolution = resolution {
-                                    newVideoResolutions[videoFile] = resolution
-                                    newResolutions.insert(resolution)
+                            for await (videoFile, metadata) in group {
+                                if let metadata = metadata {
+                                    newVideoResolutions[videoFile] = metadata.resolution
+                                    newResolutions.insert(metadata.resolution)
                                     // Cache the result
-                                    ResolutionCache.shared.setResolution(resolution, for: videoFile.path, in: directoryPath)
-                                    print("✅ Scanned: \(videoFile.lastPathComponent) -> \(resolution)")
+                                    VideoMetadataCache.shared.setMetadata(metadata, for: videoFile.path, in: directoryPath)
+                                    print("✅ Scanned: \(videoFile.lastPathComponent) -> \(metadata.resolution)")
                                 } else {
                                     // Mark failed files as "Unsupported" so they don't get rescanned every time
                                     newVideoResolutions[videoFile] = "Unsupported"
                                     newResolutions.insert("Unsupported")
-                                    ResolutionCache.shared.setResolution("Unsupported", for: videoFile.path, in: directoryPath)
+                                    let failedMetadata = VideoMetadata(resolution: "Unsupported", duration: nil, fileSize: nil)
+                                    VideoMetadataCache.shared.setMetadata(failedMetadata, for: videoFile.path, in: directoryPath)
                                     print("❌ Failed to scan: \(videoFile.lastPathComponent)")
                                 }
                                 
@@ -930,15 +1014,36 @@ struct FilterSidebar: View {
     }
     
     private func getVideoResolutionAsync(for url: URL) async -> String? {
+        let metadata = await getVideoMetadataAsync(for: url)
+        return metadata?.resolution
+    }
+    
+    private func getVideoMetadataAsync(for url: URL) async -> VideoMetadata? {
+        print("🎥 getVideoMetadataAsync called for: \(url.lastPathComponent)")
         let asset = AVAsset(url: url)
         
         do {
+            // Get file size
+            let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            let fileSize = fileAttributes[.size] as? Int64 ?? 0
+            
             // Shorter timeout for network files to fail faster
             let timeoutSeconds: TimeInterval = url.path.hasPrefix("/Volumes/") ? 3 : 5
+            
+            // Get duration
+            let duration = try await withTimeout(seconds: timeoutSeconds) {
+                try await asset.load(.duration)
+            }
+            let durationSeconds = CMTimeGetSeconds(duration)
+            
+            // Get video tracks for resolution
             let tracks = try await withTimeout(seconds: timeoutSeconds) {
                 try await asset.loadTracks(withMediaType: .video)
             }
-            guard let track = tracks.first else { return nil }
+            guard let track = tracks.first else { 
+                // No video track, but we still have file size
+                return VideoMetadata(resolution: "Unknown", duration: durationSeconds, fileSize: fileSize)
+            }
             
             let naturalSize = try await withTimeout(seconds: timeoutSeconds) {
                 try await track.load(.naturalSize)
@@ -951,33 +1056,42 @@ struct FilterSidebar: View {
             let height = Int(abs(size.height))
             
             // Common resolutions
+            let resolution: String
             switch height {
-            case 2160: return "4K"
-            case 1440: return "1440p"
-            case 1080: return "1080p"
-            case 720: return "720p"
-            case 480: return "480p"
-            case 360: return "360p"
+            case 2160: resolution = "4K"
+            case 1440: resolution = "1440p"
+            case 1080: resolution = "1080p"
+            case 720: resolution = "720p"
+            case 480: resolution = "480p"
+            case 360: resolution = "360p"
             default:
                 if height > 2160 {
-                    return "8K+"
+                    resolution = "8K+"
                 } else if height > 0 {
-                    return "\(height)p"
+                    resolution = "\(height)p"
+                } else {
+                    resolution = "Unknown"
                 }
-                return nil
             }
+            
+            return VideoMetadata(resolution: resolution, duration: durationSeconds, fileSize: fileSize)
         } catch {
             // Check if it's an unsupported format error
             if let avError = error as? AVError {
                 switch avError.code {
                 case .fileFormatNotRecognized:
                     print("Unsupported format: \(url.lastPathComponent)")
-                    return "Unsupported"
+                    // Still try to get file size
+                    if let fileAttributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                       let fileSize = fileAttributes[.size] as? Int64 {
+                        return VideoMetadata(resolution: "Unsupported", duration: nil, fileSize: fileSize)
+                    }
+                    return VideoMetadata(resolution: "Unsupported", duration: nil, fileSize: nil)
                 default:
-                    print("Error loading video resolution for \(url.lastPathComponent): \(error)")
+                    print("Error loading video metadata for \(url.lastPathComponent): \(error)")
                 }
             } else {
-                print("Error loading video resolution for \(url.lastPathComponent): \(error)")
+                print("Error loading video metadata for \(url.lastPathComponent): \(error)")
             }
             return nil
         }
@@ -1018,9 +1132,72 @@ struct FilterSidebar: View {
             return Int(numStr) ?? 0
         }
     }
+    
+    private func categoryFilterToggle(category: CategoryManager.Category) -> some View {
+        Toggle(isOn: Binding(
+            get: { selectedCategories.contains(category.id) },
+            set: { isSelected in
+                if isSelected {
+                    // Check if this category is in a single-selection group
+                    let categoryObj = categoryManager.categories.first(where: { $0.id == category.id })
+                    if let categoryObj = categoryObj,
+                       let groupId = categoryObj.groupId {
+                        let group = categoryManager.categoryGroups.first(where: { $0.id == groupId })
+                        if let group = group, !group.allowMultiple {
+                            // For single-selection groups, clear other selections in the same group
+                            let categoriesInSameGroup = categoryManager.getCategoriesInGroup(groupId: groupId).map { $0.id }
+                            for categoryId in categoriesInSameGroup {
+                                if categoryId != category.id {
+                                    selectedCategories.remove(categoryId)
+                                }
+                            }
+                        }
+                    }
+                    
+                    selectedCategories.insert(category.id)
+                } else {
+                    selectedCategories.remove(category.id)
+                }
+            }
+        )) {
+            Text(category.name)
+                .lineLimit(1)
+                .font(.caption)
+        }
+        .toggleStyle(CheckboxToggleStyle())
+    }
 }
 
 struct TimeoutError: Error {}
+
+// Helper functions for formatting
+extension ContentView {
+    static func formatDuration(_ seconds: TimeInterval?) -> String {
+        guard let seconds = seconds, !seconds.isNaN && !seconds.isInfinite && seconds > 0 else { return "" }
+        
+        let hours = Int(seconds) / 3600
+        let minutes = (Int(seconds) % 3600) / 60
+        let secs = Int(seconds) % 60
+        
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        } else {
+            return String(format: "%d:%02d", minutes, secs)
+        }
+    }
+    
+    static func formatFileSize(_ bytes: Int64?) -> String {
+        guard let bytes = bytes else { return "" }
+        
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useAll]
+        formatter.countStyle = .file
+        formatter.includesUnit = true
+        formatter.isAdaptive = true
+        
+        return formatter.string(fromByteCount: bytes)
+    }
+}
 
 struct VideoListView: View {
     let directoryURL: URL
@@ -1036,6 +1213,7 @@ struct VideoListView: View {
     @State private var thumbnails: [URL: NSImage] = [:]
     @State private var thumbnailSize: Double = UserDefaults.standard.double(forKey: "thumbnailSize") == 0 ? 150 : UserDefaults.standard.double(forKey: "thumbnailSize")
     @State private var videoResolutions: [URL: String] = [:]
+    @State private var videoMetadata: [URL: VideoMetadata] = [:]
     @State private var unsupportedFiles: Set<URL> = []
     @StateObject private var categoryManager = CategoryManager.shared
     @State private var showingDeleteAlert = false
@@ -1052,8 +1230,21 @@ struct VideoListView: View {
     @State private var showingMKVRemux = false
     @State private var showingVideoConversion = false
     @State private var videosToConvert: [URL] = []
+    @State private var sortOrder: SortOrder = .name
+    @State private var sortAscending: Bool = true
+    
+    // Multi-selection state variables
+    @State private var selectedVideos: Set<URL> = []
+    @State private var lastSelectedVideo: URL?
+    @State private var singleTapTimer: Timer?
     
     let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
+    
+    enum SortOrder: String, CaseIterable {
+        case name = "Name"
+        case duration = "Duration"
+        case size = "Size"
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1119,12 +1310,42 @@ struct VideoListView: View {
                         .cornerRadius(6)
                         .tooltip("\(unsupportedFiles.count) files with unsupported codecs")
                     }
+                    
+                    // Selection indicator
+                    if !selectedVideos.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle")
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                            Text("\(selectedVideos.count) Selected")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.blue.opacity(0.1))
+                        .cornerRadius(6)
+                        .tooltip("\(selectedVideos.count) videos selected")
+                    }
                 }
                 
                 Spacer()
                 
                 // Right side - action buttons
                 HStack {
+                    // Clear selection button (when videos are selected)
+                    if !selectedVideos.isEmpty {
+                        Button(action: {
+                            selectedVideos.removeAll()
+                            lastSelectedVideo = nil
+                        }) {
+                            Image(systemName: "xmark.circle")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.plain)
+                        .tooltip("Clear Selection")
+                    }
+                    
                     // Refresh button
                     Button(action: { 
                         refreshDirectory()
@@ -1166,6 +1387,34 @@ struct VideoListView: View {
                     }
                     .buttonStyle(.plain)
                     .tooltip("Convert MKV Files - Convert to MP4")
+                    
+                    // Sort menu
+                    Menu {
+                        ForEach(SortOrder.allCases, id: \.self) { order in
+                            Button(action: {
+                                if sortOrder == order {
+                                    sortAscending.toggle()
+                                } else {
+                                    sortOrder = order
+                                    sortAscending = true
+                                }
+                                applyFilters()
+                            }) {
+                                HStack {
+                                    Text(order.rawValue)
+                                    if sortOrder == order {
+                                        Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.title3)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .tooltip("Sort by: \(sortOrder.rawValue)")
                     
                     // Filter toggle button
                     Button(action: { 
@@ -1253,7 +1502,8 @@ struct VideoListView: View {
                                     editingVideo: $editingVideo,
                                     editingText: $editingText,
                                     onRename: renameVideo,
-                                    isUnsupported: unsupportedFiles.contains(videoURL)
+                                    isUnsupported: unsupportedFiles.contains(videoURL),
+                                    metadata: videoMetadata[videoURL]
                                 )
                                 .onTapGesture(count: 2) {
                                     if editingVideo == nil {
@@ -1273,26 +1523,129 @@ struct VideoListView: View {
                     }
                 } else {
                     // List view
-                    List(filteredVideoFiles, id: \.self) { videoURL in
-                        VideoListRow(
-                            videoURL: videoURL,
-                            thumbnail: thumbnails[videoURL],
-                            editingVideo: $editingVideo,
-                            editingText: $editingText,
-                            onRename: renameVideo,
-                            isUnsupported: unsupportedFiles.contains(videoURL)
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) {
-                            if editingVideo == nil {
-                                videoToPlay = videoURL
-                            }
-                        }
-                        .contextMenu {
+                    VStack(spacing: 0) {
+                        // Column headers
+                        HStack(spacing: 12) {
+                            Text("")
+                                .frame(width: 40) // Space for thumbnail
+                            
                             Button(action: {
-                                showDeleteConfirmation(for: videoURL)
+                                if sortOrder == .name {
+                                    sortAscending.toggle()
+                                } else {
+                                    sortOrder = .name
+                                    sortAscending = true
+                                }
+                                applyFilters()
                             }) {
-                                Label("Delete", systemImage: "trash")
+                                HStack(spacing: 4) {
+                                    Text("Name")
+                                        .font(.system(size: 11))
+                                        .fontWeight(sortOrder == .name ? .bold : .medium)
+                                    if sortOrder == .name {
+                                        Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
+                                            .font(.system(size: 9))
+                                    }
+                                }
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Click to sort by name")
+                            
+                            Button(action: {
+                                if sortOrder == .duration {
+                                    sortAscending.toggle()
+                                } else {
+                                    sortOrder = .duration
+                                    sortAscending = true
+                                }
+                                applyFilters()
+                            }) {
+                                HStack(spacing: 4) {
+                                    Text("Duration")
+                                        .font(.system(size: 11))
+                                        .fontWeight(sortOrder == .duration ? .bold : .medium)
+                                    if sortOrder == .duration {
+                                        Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
+                                            .font(.system(size: 9))
+                                    }
+                                }
+                                .foregroundColor(.secondary)
+                                .frame(width: 70, alignment: .trailing)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Click to sort by duration")
+                            
+                            Button(action: {
+                                if sortOrder == .size {
+                                    sortAscending.toggle()
+                                } else {
+                                    sortOrder = .size
+                                    sortAscending = true
+                                }
+                                applyFilters()
+                            }) {
+                                HStack(spacing: 4) {
+                                    Text("Size")
+                                        .font(.system(size: 11))
+                                        .fontWeight(sortOrder == .size ? .bold : .medium)
+                                    if sortOrder == .size {
+                                        Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
+                                            .font(.system(size: 9))
+                                    }
+                                }
+                                .foregroundColor(.secondary)
+                                .frame(width: 90, alignment: .trailing)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Click to sort by file size")
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                        .background(Color.gray.opacity(0.1))
+                        
+                        Divider()
+                        
+                        List(filteredVideoFiles, id: \.self, selection: $selectedVideos) { videoURL in
+                            VideoListRow(
+                                videoURL: videoURL,
+                                thumbnail: thumbnails[videoURL],
+                                editingVideo: $editingVideo,
+                                editingText: $editingText,
+                                onRename: renameVideo,
+                                isUnsupported: unsupportedFiles.contains(videoURL),
+                                metadata: videoMetadata[videoURL],
+                                isSelected: selectedVideos.contains(videoURL)
+                            )
+                            .contentShape(Rectangle())
+                            .onTapGesture(count: 2) {
+                                singleTapTimer?.invalidate()
+                                singleTapTimer = nil
+                                if editingVideo == nil {
+                                    videoToPlay = videoURL
+                                }
+                            }
+                            .onTapGesture(count: 1) {
+                                singleTapTimer?.invalidate()
+                                singleTapTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in
+                                    handleVideoSelection(videoURL)
+                                }
+                            }
+                            .contextMenu {
+                                if selectedVideos.contains(videoURL) && selectedVideos.count > 1 {
+                                    Button(action: {
+                                        showBatchDeleteConfirmation()
+                                    }) {
+                                        Label("Delete \(selectedVideos.count) files", systemImage: "trash")
+                                    }
+                                } else {
+                                    Button(action: {
+                                        showDeleteConfirmation(for: videoURL)
+                                    }) {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
                             }
                         }
                     }
@@ -1359,11 +1712,14 @@ struct VideoListView: View {
             )
         }
         .onAppear {
+            print("🎬 VideoListView onAppear")
             loadVideoFiles()
             loadThumbnails()
             applyFilters()
         }
         .onChange(of: directoryURL) { _, _ in
+            // Clear metadata when switching directories
+            videoMetadata.removeAll()
             loadVideoFiles()
             loadThumbnails()
             applyFilters()
@@ -1390,6 +1746,7 @@ struct VideoListView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .refreshBrowser)) { _ in
+            videoMetadata.removeAll()
             loadVideoFiles()
             loadThumbnails()
             applyFilters()
@@ -1418,8 +1775,11 @@ struct VideoListView: View {
     }
     
     private func loadVideoFiles() {
+        print("📂 loadVideoFiles() called")
         localVideoFiles = getVideoFiles()
         videoFiles = localVideoFiles
+        print("📂 Found \(localVideoFiles.count) video files")
+        loadVideoMetadata()
     }
     
     private func applyFilters() {
@@ -1466,7 +1826,25 @@ struct VideoListView: View {
         
         // Final deduplication step to ensure no duplicates make it to ForEach
         let uniqueFiltered = Array(Set(filtered))
-        filteredVideoFiles = uniqueFiltered.sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+        
+        // Apply sorting
+        filteredVideoFiles = uniqueFiltered.sorted { file1, file2 in
+            switch sortOrder {
+            case .name:
+                let result = file1.lastPathComponent.localizedCaseInsensitiveCompare(file2.lastPathComponent)
+                return sortAscending ? (result == .orderedAscending) : (result == .orderedDescending)
+                
+            case .duration:
+                let duration1 = videoMetadata[file1]?.duration ?? 0
+                let duration2 = videoMetadata[file2]?.duration ?? 0
+                return sortAscending ? (duration1 < duration2) : (duration1 > duration2)
+                
+            case .size:
+                let size1 = videoMetadata[file1]?.fileSize ?? 0
+                let size2 = videoMetadata[file2]?.fileSize ?? 0
+                return sortAscending ? (size1 < size2) : (size1 > size2)
+            }
+        }
     }
     
     private func getDisplayName(for url: URL) -> String {
@@ -1876,6 +2254,263 @@ struct VideoListView: View {
         // Just show the conversion dialog - it will filter the files itself
         showingVideoConversion = true
     }
+    
+    private func loadVideoMetadata() {
+        let directoryPath = directoryURL.path
+        print("📊 Loading video metadata for \(directoryURL.lastPathComponent)")
+        
+        // First, load cached metadata
+        var incompleteMetadataFiles: [URL] = []
+        if let cachedMetadata = VideoMetadataCache.shared.getAllMetadata(for: directoryPath) {
+            var loadedCount = 0
+            var incompleteCount = 0
+            for (videoPath, metadata) in cachedMetadata {
+                let videoURL = URL(fileURLWithPath: videoPath)
+                if localVideoFiles.contains(videoURL) {
+                    videoMetadata[videoURL] = metadata
+                    loadedCount += 1
+                    
+                    // Check if metadata is incomplete (missing duration or file size)
+                    if metadata.duration == nil || metadata.fileSize == nil {
+                        incompleteMetadataFiles.append(videoURL)
+                        incompleteCount += 1
+                    }
+                }
+            }
+            print("📊 Loaded \(loadedCount) cached metadata entries")
+            print("📊 Found \(incompleteCount) entries with incomplete metadata (missing duration/size)")
+            
+            // Debug: Show a sample of what was loaded
+            if let firstVideo = localVideoFiles.first, let metadata = videoMetadata[firstVideo] {
+                print("📊 Sample metadata - File: \(firstVideo.lastPathComponent)")
+                print("   Resolution: \(metadata.resolution)")
+                print("   Duration: \(metadata.duration != nil ? "\(metadata.duration!) seconds (\(ContentView.formatDuration(metadata.duration)))" : "MISSING")")
+                print("   Size: \(metadata.fileSize != nil ? "\(metadata.fileSize!) bytes (\(ContentView.formatFileSize(metadata.fileSize)))" : "MISSING")")
+            }
+        }
+        
+        // Then load any missing metadata asynchronously
+        Task {
+            var missingFiles: [URL] = []
+            
+            // Find files without metadata or with incomplete metadata
+            for videoFile in localVideoFiles {
+                if let metadata = videoMetadata[videoFile] {
+                    // Check if existing metadata is incomplete
+                    if metadata.duration == nil || metadata.fileSize == nil {
+                        missingFiles.append(videoFile)
+                    }
+                } else {
+                    // No metadata at all
+                    missingFiles.append(videoFile)
+                }
+            }
+            
+            // Also add files that had incomplete metadata from cache
+            for file in incompleteMetadataFiles {
+                if !missingFiles.contains(file) {
+                    missingFiles.append(file)
+                }
+            }
+            
+            if !missingFiles.isEmpty {
+                print("📊 Loading metadata for \(missingFiles.count) files without cached data")
+                // Process in batches
+                let batchSize = directoryURL.path.hasPrefix("/Volumes/") ? 3 : 5
+                var loadedCount = 0
+                
+                for i in stride(from: 0, to: missingFiles.count, by: batchSize) {
+                    let batch = Array(missingFiles[i..<min(i + batchSize, missingFiles.count)])
+                    
+                    await withTaskGroup(of: (URL, VideoMetadata?).self) { group in
+                        for videoFile in batch {
+                            group.addTask {
+                                let metadata = await self.getVideoMetadataAsync(for: videoFile)
+                                return (videoFile, metadata)
+                            }
+                        }
+                        
+                        for await (videoFile, metadata) in group {
+                            if let metadata = metadata {
+                                // Cache the result
+                                VideoMetadataCache.shared.setMetadata(metadata, for: videoFile.path, in: directoryPath)
+                                
+                                // Update UI
+                                await MainActor.run {
+                                    self.videoMetadata[videoFile] = metadata
+                                    loadedCount += 1
+                                    print("📊 Loaded metadata for \(videoFile.lastPathComponent): duration=\(metadata.duration ?? 0)s, size=\(metadata.fileSize ?? 0)")
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                await MainActor.run {
+                    print("📊 Finished loading metadata. Total: \(self.videoMetadata.count)")
+                }
+            }
+        }
+    }
+    
+    private func getVideoMetadataAsync(for url: URL) async -> VideoMetadata? {
+        print("🎥 getVideoMetadataAsync called for: \(url.lastPathComponent)")
+        let asset = AVAsset(url: url)
+        
+        do {
+            // Get file size
+            let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            let fileSize = fileAttributes[.size] as? Int64 ?? 0
+            
+            // Shorter timeout for network files to fail faster
+            let timeoutSeconds: TimeInterval = url.path.hasPrefix("/Volumes/") ? 3 : 5
+            
+            // Get duration
+            let duration = try await withTimeout(seconds: timeoutSeconds) {
+                try await asset.load(.duration)
+            }
+            let durationSeconds = CMTimeGetSeconds(duration)
+            
+            // Get video tracks for resolution
+            let tracks = try await withTimeout(seconds: timeoutSeconds) {
+                try await asset.loadTracks(withMediaType: .video)
+            }
+            guard let track = tracks.first else { 
+                // No video track, but we still have file size
+                return VideoMetadata(resolution: "Unknown", duration: durationSeconds, fileSize: fileSize)
+            }
+            
+            let naturalSize = try await withTimeout(seconds: timeoutSeconds) {
+                try await track.load(.naturalSize)
+            }
+            let preferredTransform = try await withTimeout(seconds: timeoutSeconds) {
+                try await track.load(.preferredTransform)
+            }
+            
+            let size = naturalSize.applying(preferredTransform)
+            let height = Int(abs(size.height))
+            
+            // Common resolutions
+            let resolution: String
+            switch height {
+            case 2160: resolution = "4K"
+            case 1440: resolution = "1440p"
+            case 1080: resolution = "1080p"
+            case 720: resolution = "720p"
+            case 480: resolution = "480p"
+            case 360: resolution = "360p"
+            default:
+                if height > 2160 {
+                    resolution = "8K+"
+                } else if height > 0 {
+                    resolution = "\(height)p"
+                } else {
+                    resolution = "Unknown"
+                }
+            }
+            
+            return VideoMetadata(resolution: resolution, duration: durationSeconds, fileSize: fileSize)
+        } catch {
+            // Check if it's an unsupported format error
+            if let avError = error as? AVError {
+                switch avError.code {
+                case .fileFormatNotRecognized:
+                    print("Unsupported format: \(url.lastPathComponent)")
+                    // Still try to get file size
+                    if let fileAttributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                       let fileSize = fileAttributes[.size] as? Int64 {
+                        return VideoMetadata(resolution: "Unsupported", duration: nil, fileSize: fileSize)
+                    }
+                    return VideoMetadata(resolution: "Unsupported", duration: nil, fileSize: nil)
+                default:
+                    print("Error loading video metadata for \(url.lastPathComponent): \(error)")
+                }
+            } else {
+                print("Error loading video metadata for \(url.lastPathComponent): \(error)")
+            }
+            return nil
+        }
+    }
+    
+    private func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw TimeoutError()
+            }
+            
+            guard let result = try await group.next() else {
+                throw TimeoutError()
+            }
+            
+            group.cancelAll()
+            return result
+        }
+    }
+    
+    // MARK: - Multi-Selection Functions
+    
+    private func handleVideoSelection(_ videoURL: URL) {
+        let isCommandPressed = NSEvent.modifierFlags.contains(.command)
+        let isShiftPressed = NSEvent.modifierFlags.contains(.shift)
+        
+        if isShiftPressed && lastSelectedVideo != nil {
+            // Shift selection - select range
+            selectVideoRange(from: lastSelectedVideo!, to: videoURL)
+        } else if isCommandPressed {
+            // Command selection - toggle individual
+            if selectedVideos.contains(videoURL) {
+                selectedVideos.remove(videoURL)
+            } else {
+                selectedVideos.insert(videoURL)
+                lastSelectedVideo = videoURL
+            }
+        } else {
+            // Normal click - select only this video
+            selectedVideos = [videoURL]
+            lastSelectedVideo = videoURL
+        }
+    }
+    
+    private func selectVideoRange(from startURL: URL, to endURL: URL) {
+        guard let startIndex = filteredVideoFiles.firstIndex(of: startURL),
+              let endIndex = filteredVideoFiles.firstIndex(of: endURL) else { return }
+        
+        let minIndex = min(startIndex, endIndex)
+        let maxIndex = max(startIndex, endIndex)
+        
+        // Add all videos in range to selection
+        for index in minIndex...maxIndex {
+            selectedVideos.insert(filteredVideoFiles[index])
+        }
+    }
+    
+    private func showBatchDeleteConfirmation() {
+        let alert = NSAlert()
+        alert.messageText = "Delete \(selectedVideos.count) videos?"
+        alert.informativeText = "Are you sure you want to delete these \(selectedVideos.count) videos? This action cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            batchDeleteVideos()
+        }
+    }
+    
+    private func batchDeleteVideos() {
+        let videosToDelete = Array(selectedVideos)
+        selectedVideos.removeAll()
+        
+        for videoURL in videosToDelete {
+            deleteVideo(videoURL)
+        }
+    }
 }
 
 struct VideoListRow: View {
@@ -1885,86 +2520,131 @@ struct VideoListRow: View {
     @Binding var editingText: String
     let onRename: (URL, String) -> Void
     let isUnsupported: Bool
+    let metadata: VideoMetadata?
+    let isSelected: Bool
     @StateObject private var categoryManager = CategoryManager.shared
     @State private var hasCategories: Bool = false
+    @FocusState private var isTextFieldFocused: Bool
     
     var body: some View {
-        HStack {
+        HStack(spacing: 12) {
+            // Thumbnail with overlays
             ZStack {
                 if let thumbnail = thumbnail {
                     Image(nsImage: thumbnail)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .frame(width: 60, height: 34)
+                        .frame(width: 40, height: 30)
                         .cornerRadius(4)
                 } else {
-                    Image(systemName: "film")
-                        .foregroundColor(.blue)
-                        .frame(width: 60, height: 34)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.gray.opacity(0.2))
+                        .frame(width: 40, height: 30)
+                        .overlay(
+                            Image(systemName: "film")
+                                .foregroundColor(.gray)
+                                .font(.system(size: 16))
+                        )
                 }
                 
                 // Red X overlay for unsupported files
                 if isUnsupported {
-                    ZStack {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 20, height: 20)
-                        
-                        Image(systemName: "xmark")
-                            .foregroundColor(.white)
-                            .font(.system(size: 10, weight: .bold))
-                    }
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 16, height: 16)
+                        .overlay(
+                            Image(systemName: "xmark")
+                                .foregroundColor(.white)
+                                .font(.system(size: 8, weight: .bold))
+                        )
+                        .offset(x: 15, y: -8)
                 }
                 
-                // Green checkmark if video has categories (bottom right)
+                // Green checkmark if video has categories
                 if hasCategories {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Spacer()
-                            Circle()
-                                .fill(Color.green)
-                                .frame(width: 16, height: 16)
-                                .overlay(
-                                    Image(systemName: "checkmark")
-                                        .foregroundColor(.white)
-                                        .font(.system(size: 8, weight: .bold))
-                                )
-                                .offset(x: 5, y: 5)
-                        }
-                    }
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 16, height: 16)
+                        .overlay(
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.white)
+                                .font(.system(size: 8, weight: .bold))
+                        )
+                        .offset(x: 15, y: 8)
                 }
             }
+            .frame(width: 40, height: 30)
             
+            // Filename (left-aligned, takes remaining space)
             if editingVideo == videoURL {
                 // Edit mode
-                TextField("Filename", text: $editingText, onCommit: {
-                    if !editingText.isEmpty {
-                        onRename(videoURL, editingText)
+                HStack(spacing: 0) {
+                    TextField("Filename", text: $editingText, onCommit: {
+                        if !editingText.isEmpty {
+                            onRename(videoURL, editingText)
+                        }
+                        editingVideo = nil
+                        isTextFieldFocused = false
+                    })
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .frame(maxWidth: .infinity)
+                    .focused($isTextFieldFocused)
+                    .onExitCommand {
+                        // Cancel edit on Escape key
+                        editingVideo = nil
+                        editingText = ""
+                        isTextFieldFocused = false
                     }
-                    editingVideo = nil
-                })
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-                .onAppear {
-                    // Focus the text field when it appears
-                    DispatchQueue.main.async {
-                        NSApp.keyWindow?.makeFirstResponder(nil)
+                    .onAppear {
+                        // Focus the text field when it appears
+                        isTextFieldFocused = true
                     }
+                    
+                    Text(".\(videoURL.pathExtension)")
+                        .foregroundColor(.secondary)
+                        .padding(.leading, 4)
                 }
-                
-                Text(".\(videoURL.pathExtension)")
-                    .foregroundColor(.secondary)
             } else {
                 // Display mode
                 Text(videoURL.lastPathComponent)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .onTapGesture {
                         editingVideo = videoURL
                         editingText = videoURL.deletingPathExtension().lastPathComponent
                     }
             }
             
-            Spacer()
+            // Duration column
+            if let duration = metadata?.duration, duration > 0 {
+                Text(ContentView.formatDuration(duration))
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .frame(width: 70, alignment: .trailing)
+            } else {
+                Text("--:--")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color.secondary.opacity(0.5))
+                    .frame(width: 70, alignment: .trailing)
+            }
+            
+            // File size column
+            if let fileSize = metadata?.fileSize, fileSize > 0 {
+                Text(ContentView.formatFileSize(fileSize))
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .frame(width: 90, alignment: .trailing)
+            } else {
+                Text("--")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color.secondary.opacity(0.5))
+                    .frame(width: 90, alignment: .trailing)
+            }
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(isSelected ? Color.accentColor.opacity(0.3) : Color.clear)
         .onAppear {
             checkCategories()
         }
@@ -1988,8 +2668,10 @@ struct VideoGridItem: View {
     @Binding var editingText: String
     let onRename: (URL, String) -> Void
     let isUnsupported: Bool
+    let metadata: VideoMetadata?
     @StateObject private var categoryManager = CategoryManager.shared
     @State private var hasCategories: Bool = false
+    @FocusState private var isTextFieldFocused: Bool
     
     var body: some View {
         VStack(spacing: 8) {
@@ -2053,9 +2735,21 @@ struct VideoGridItem: View {
                             onRename(videoURL, editingText)
                         }
                         editingVideo = nil
+                        isTextFieldFocused = false
                     })
                     .textFieldStyle(RoundedBorderTextFieldStyle())
                     .font(.system(size: min(12, size * 0.08)))
+                    .focused($isTextFieldFocused)
+                    .onExitCommand {
+                        // Cancel edit on Escape key
+                        editingVideo = nil
+                        editingText = ""
+                        isTextFieldFocused = false
+                    }
+                    .onAppear {
+                        // Focus the text field when it appears
+                        isTextFieldFocused = true
+                    }
                     
                     Text(".\(videoURL.pathExtension)")
                         .font(.system(size: min(12, size * 0.08)))
@@ -2064,15 +2758,28 @@ struct VideoGridItem: View {
                 .frame(maxWidth: .infinity)
             } else {
                 // Display mode
-                Text(videoURL.lastPathComponent)
-                    .font(.system(size: min(12, size * 0.08)))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-                    .onTapGesture {
-                        editingVideo = videoURL
-                        editingText = videoURL.deletingPathExtension().lastPathComponent
+                VStack(spacing: 2) {
+                    Text(videoURL.lastPathComponent)
+                        .font(.system(size: min(12, size * 0.08)))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                        .onTapGesture {
+                            editingVideo = videoURL
+                            editingText = videoURL.deletingPathExtension().lastPathComponent
+                        }
+                    
+                    // Duration
+                    if let duration = metadata?.duration, duration > 0 {
+                        Text(ContentView.formatDuration(duration))
+                            .font(.system(size: min(10, size * 0.065)))
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("--:--")
+                            .font(.system(size: min(10, size * 0.065)))
+                            .foregroundColor(Color.secondary.opacity(0.5))
                     }
+                }
             }
         }
         .padding(8)
@@ -2372,38 +3079,60 @@ struct VideoPlayerContent: View {
                             Text("Categories")
                                 .font(.headline)
                                 .foregroundColor(.white)
-                                .padding(.bottom, 4)
+                                .padding(.bottom, 2)
                             
+                            // Create a flow layout for all groups and ungrouped categories
                             LazyVGrid(columns: [
-                                GridItem(.adaptive(minimum: 120, maximum: 200), spacing: 12)
-                            ], spacing: 8) {
-                                ForEach(categoryManager.categories) { category in
-                                    Toggle(isOn: Binding(
-                                        get: { selectedCategories.contains(category.id) },
-                                        set: { isSelected in
-                                            if isSelected {
-                                                selectedCategories.insert(category.id)
-                                            } else {
-                                                selectedCategories.remove(category.id)
+                                GridItem(.adaptive(minimum: 250, maximum: 350), spacing: 8)
+                            ], alignment: .leading, spacing: 6) {
+                                
+                                // Show ungrouped categories first
+                                let ungroupedCategories = categoryManager.getUngroupedCategories()
+                                if !ungroupedCategories.isEmpty {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("Ungrouped")
+                                            .font(.subheadline)
+                                            .foregroundColor(.white.opacity(0.8))
+                                        
+                                        LazyVGrid(columns: [
+                                            GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 6)
+                                        ], spacing: 3) {
+                                            ForEach(ungroupedCategories) { category in
+                                                categoryVideoToggle(category: category)
                                             }
-                                            categoryManager.setVideoCategory(
-                                                videoPath: videoURL.path,
-                                                categoryId: category.id,
-                                                isSelected: isSelected
-                                            )
-                                            // Notify views to update checkmarks
-                                            NotificationCenter.default.post(
-                                                name: Notification.Name("categoriesUpdated"),
-                                                object: nil
-                                            )
                                         }
-                                    )) {
-                                        Text(category.name)
-                                            .foregroundColor(.white)
-                                            .lineLimit(1)
-                                            .truncationMode(.tail)
                                     }
-                                    .toggleStyle(CheckboxToggleStyle())
+                                }
+                                
+                                // Show grouped categories
+                                ForEach(categoryManager.categoryGroups) { group in
+                                    let groupCategories = categoryManager.getCategoriesInGroup(groupId: group.id)
+                                    if !groupCategories.isEmpty {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: group.allowMultiple ? "folder.badge.plus" : "folder.badge.minus")
+                                                    .foregroundColor(group.allowMultiple ? .blue : .orange)
+                                                    .font(.caption)
+                                                
+                                                Text(group.name)
+                                                    .font(.subheadline)
+                                                    .foregroundColor(.white.opacity(0.8))
+                                                
+                                                Text(group.allowMultiple ? "(Multi)" : "(Single)")
+                                                    .font(.caption2)
+                                                    .foregroundColor(.white.opacity(0.6))
+                                                    .italic()
+                                            }
+                                            
+                                            LazyVGrid(columns: [
+                                                GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 6)
+                                            ], spacing: 3) {
+                                                ForEach(groupCategories) { category in
+                                                    categoryVideoToggle(category: category)
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2661,5 +3390,41 @@ struct VideoPlayerContent: View {
             .replacingOccurrences(of: "+", with: "-")
         
         return cacheDir.appendingPathComponent("\(safeHash).png")
+    }
+    
+    private func categoryVideoToggle(category: CategoryManager.Category) -> some View {
+        Toggle(isOn: Binding(
+            get: { selectedCategories.contains(category.id) },
+            set: { isSelected in
+                // Enforce group selection rules
+                let updatedCategories = categoryManager.enforceGroupSelectionRules(
+                    for: videoURL.path,
+                    selectedCategoryId: category.id,
+                    isSelected: isSelected
+                )
+                
+                // Update the local state to reflect the actual categories
+                selectedCategories = updatedCategories
+                
+                // Set the main category that was toggled
+                categoryManager.setVideoCategory(
+                    videoPath: videoURL.path,
+                    categoryId: category.id,
+                    isSelected: isSelected
+                )
+                
+                // Notify views to update checkmarks
+                NotificationCenter.default.post(
+                    name: Notification.Name("categoriesUpdated"),
+                    object: nil
+                )
+            }
+        )) {
+            Text(category.name)
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .toggleStyle(CheckboxToggleStyle())
     }
 }
