@@ -5,6 +5,7 @@ import AVFoundation
 class VideoMetadataManager: ObservableObject {
     static let shared = VideoMetadataManager()
     private var db: OpaquePointer?
+    private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     
     struct CachedMetadata {
         let path: String
@@ -16,6 +17,7 @@ class VideoMetadataManager: ObservableObject {
     }
     
     private init() {
+        print("🚀 VideoMetadataManager.init() called")
         openDatabase()  // This will now delete corrupted databases
         createTables()
         
@@ -29,6 +31,8 @@ class VideoMetadataManager: ObservableObject {
             name: .databaseRestored,
             object: nil
         )
+        
+        print("🚀 VideoMetadataManager initialized with db: \(db != nil ? "✅" : "❌")")
     }
     
     private func cleanupCorruptedResolutions() {
@@ -108,7 +112,7 @@ class VideoMetadataManager: ObservableObject {
             // Delete only truly invalid entries (not legitimate resolutions like 1084p)
             let deleteQuery = """
                 DELETE FROM video_metadata 
-                WHERE NOT (resolution GLOB '[0-9][0-9][0-9]*p' OR resolution IN ('4K','SD','Unsupported'))
+                WHERE NOT (resolution GLOB '[0-9]*p' OR resolution IN ('4K','8K+','SD','Unsupported','Unknown'))
             """
             if sqlite3_exec(db, deleteQuery, nil, nil, nil) == SQLITE_OK {
                 let deleted = sqlite3_changes(db)
@@ -149,6 +153,16 @@ class VideoMetadataManager: ObservableObject {
         let dbPath = getDatabasePath()
         let fileManager = FileManager.default
         
+        // Debug: Check database file size and existence
+        if fileManager.fileExists(atPath: dbPath) {
+            let attributes = try? fileManager.attributesOfItem(atPath: dbPath)
+            let fileSize = attributes?[.size] as? Int64 ?? 0
+            print("📊 Database exists: \(dbPath)")
+            print("📊 Database size: \(fileSize) bytes")
+        } else {
+            print("📊 Database does not exist: \(dbPath)")
+        }
+        
         // Check if database exists and is corrupted
         if fileManager.fileExists(atPath: dbPath) {
             // Try to open and check integrity
@@ -174,14 +188,42 @@ class VideoMetadataManager: ObservableObject {
         }
         
         // Now open the database (will create new one if we deleted it)
-        if sqlite3_open(dbPath, &db) != SQLITE_OK {
-            print("Error opening metadata database")
+        let openResult = sqlite3_open(dbPath, &db)
+        if openResult != SQLITE_OK {
+            print("❌ Error opening metadata database")
+            print("   Path: \(dbPath)")
+            print("   Error code: \(openResult)")
+            if let db = db {
+                print("   Error: \(String(cString: sqlite3_errmsg(db)))")
+            }
             return
+        } else {
+            print("✅ Successfully opened database at: \(dbPath)")
         }
         
-        // Enable WAL mode for better performance
-        sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil)
-        sqlite3_exec(db, "PRAGMA synchronous=NORMAL", nil, nil, nil)
+        // Use DELETE mode for maximum compatibility and safety
+        var resultPtr: UnsafeMutablePointer<Int8>?
+        sqlite3_exec(db, "PRAGMA journal_mode=DELETE", nil, nil, &resultPtr)
+        if let result = resultPtr {
+            print("📊 Journal mode set to: \(String(cString: result))")
+            sqlite3_free(resultPtr)
+        }
+        
+        // Use FULL synchronous mode for maximum data integrity
+        sqlite3_exec(db, "PRAGMA synchronous=FULL", nil, nil, nil)
+        
+        // Run integrity check
+        var integrityResult: UnsafeMutablePointer<Int8>?
+        let integrityCheck = sqlite3_exec(db, "PRAGMA integrity_check", nil, nil, &integrityResult)
+        if integrityCheck == SQLITE_OK {
+            if let result = integrityResult {
+                let integrityStatus = String(cString: result)
+                if integrityStatus != "ok" {
+                    print("⚠️ Database integrity check failed: \(integrityStatus)")
+                }
+                sqlite3_free(integrityResult)
+            }
+        }
     }
     
     private func createTables() {
@@ -209,26 +251,51 @@ class VideoMetadataManager: ObservableObject {
         
         // Create index for faster lookups
         sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_video_path ON video_metadata(path)", nil, nil, nil)
+        
+        // Debug: Count entries in database
+        let countQuery = "SELECT COUNT(*) FROM video_metadata"
+        var statement: OpaquePointer?
+        if sqlite3_prepare_v2(db, countQuery, -1, &statement, nil) == SQLITE_OK {
+            if sqlite3_step(statement) == SQLITE_ROW {
+                let count = sqlite3_column_int(statement, 0)
+                print("📊 Database contains \(count) metadata entries")
+            }
+            sqlite3_finalize(statement)
+        }
     }
     
     func getCachedMetadata(for path: String) -> CachedMetadata? {
+        guard let db = db else {
+            print("❌ Database not initialized in getCachedMetadata")
+            return nil
+        }
+        
         let query = "SELECT resolution, duration, file_size, last_modified, last_scanned FROM video_metadata WHERE path = ?"
         var statement: OpaquePointer?
         
         guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
+            print("❌ Failed to prepare getCachedMetadata query")
             return nil
         }
         
-        sqlite3_bind_text(statement, 1, path, -1, nil)
+        sqlite3_bind_text(statement, 1, path, -1, SQLITE_TRANSIENT)
         
         defer { sqlite3_finalize(statement) }
         
-        if sqlite3_step(statement) == SQLITE_ROW {
+        let result = sqlite3_step(statement)
+        if result == SQLITE_ROW {
             let resolution = String(cString: sqlite3_column_text(statement, 0))
             let duration = sqlite3_column_double(statement, 1)
             let fileSize = sqlite3_column_int64(statement, 2)
             let lastModified = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
             let lastScanned = Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
+            
+            // Debug logging commented out to reduce console spam
+            // let filename = URL(fileURLWithPath: path).lastPathComponent
+            // if filename.hasPrefix("!!") {
+            //     print("✅ Found in DB: \(filename)")
+            //     print("   Resolution: \(resolution)")
+            // }
             
             return CachedMetadata(
                 path: path,
@@ -238,14 +305,28 @@ class VideoMetadataManager: ObservableObject {
                 lastModified: lastModified,
                 lastScanned: lastScanned
             )
+        } else {
+            // Debug logging commented out to reduce console spam
+            // let filename = URL(fileURLWithPath: path).lastPathComponent
+            // if filename.hasPrefix("!!") {
+            //     print("❌ Not found in DB: \(filename)")
+            //     print("   SQL result: \(result)")
+            //     print("   Path: \(path)")
+            // }
         }
         
         return nil
     }
     
     func cacheMetadata(_ metadata: CachedMetadata) {
+        // Check if database is initialized
+        guard let db = db else {
+            print("❌ Database not initialized when trying to cache")
+            return
+        }
+        
         // Validate resolution before caching - check if it's a valid pattern
-        let validPattern = metadata.resolution.range(of: "^(4K|\\d{3,4}p|SD|Unsupported)$", options: .regularExpression) != nil
+        let validPattern = metadata.resolution.range(of: "^(4K|8K\\+|\\d+p|SD|Unsupported|Unknown)$", options: .regularExpression) != nil
         guard validPattern else {
             print("⚠️ Invalid resolution format '\(metadata.resolution)' for \(metadata.path)")
             return
@@ -258,13 +339,16 @@ class VideoMetadataManager: ObservableObject {
         """
         
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
+        let prepareResult = sqlite3_prepare_v2(db, query, -1, &statement, nil)
+        guard prepareResult == SQLITE_OK else {
             print("❌ Failed to prepare cache statement")
+            print("   Error: \(String(cString: sqlite3_errmsg(db)))")
+            print("   Result code: \(prepareResult)")
+            print("   Query: \(query)")
             return
         }
         
         // Use SQLITE_TRANSIENT to ensure strings are copied
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         sqlite3_bind_text(statement, 1, metadata.path, -1, SQLITE_TRANSIENT)
         sqlite3_bind_text(statement, 2, metadata.resolution, -1, SQLITE_TRANSIENT)
         sqlite3_bind_double(statement, 3, metadata.duration)
@@ -272,11 +356,33 @@ class VideoMetadataManager: ObservableObject {
         sqlite3_bind_double(statement, 5, metadata.lastModified.timeIntervalSince1970)
         sqlite3_bind_double(statement, 6, metadata.lastScanned.timeIntervalSince1970)
         
-        if sqlite3_step(statement) != SQLITE_DONE {
+        let stepResult = sqlite3_step(statement)
+        if stepResult != SQLITE_DONE {
             print("❌ Failed to cache metadata: \(String(cString: sqlite3_errmsg(db)))")
+            print("   Step result: \(stepResult)")
+        } else {
+            // Debug logging commented out to reduce console spam
+            // let filename = URL(fileURLWithPath: metadata.path).lastPathComponent
+            // if filename.hasPrefix("!!") {
+            //     print("✅ INSERT executed successfully: \(filename)")
+            //     print("   Path: \(metadata.path)")
+            //     print("   Resolution: \(metadata.resolution)")
+            //     print("   Rows changed: \(sqlite3_changes(db))")
+            // }
         }
         
         sqlite3_finalize(statement)
+        
+        // Verify the write was successful - commented out to reduce console spam
+        // let filename = URL(fileURLWithPath: metadata.path).lastPathComponent
+        // if filename.hasPrefix("!!") {
+        //     // Immediately try to read it back
+        //     if let verifyMetadata = getCachedMetadata(for: metadata.path) {
+        //         print("✅ Verified write: \(filename) is now in database")
+        //     } else {
+        //         print("❌ Write verification failed: \(filename) not found after caching")
+        //     }
+        // }
     }
     
     func getVideoMetadata(for url: URL, forceRefresh: Bool = false) -> (resolution: String, duration: Double)? {
@@ -389,7 +495,8 @@ class VideoMetadataManager: ObservableObject {
                 resolution = "SD"
             }
             
-            print("📹 Video: \(url.lastPathComponent) - Dimensions: \(Int(width))x\(Int(height)) -> Resolution: \(resolution)")
+            // Commented out to reduce console spam
+            // print("📹 Video: \(url.lastPathComponent) - Dimensions: \(Int(width))x\(Int(height)) -> Resolution: \(resolution)")
             
             return (resolution, durationSeconds)
         } catch {
@@ -484,6 +591,8 @@ class VideoMetadataManager: ObservableObject {
                     }
                 }
                 
+                // No checkpoint needed in DELETE mode
+                
                 let finalResults = results
                 await MainActor.run {
                     completion(finalResults)
@@ -501,7 +610,7 @@ class VideoMetadataManager: ObservableObject {
             return false
         }
         
-        sqlite3_bind_text(statement, 1, path, -1, nil)
+        sqlite3_bind_text(statement, 1, path, -1, SQLITE_TRANSIENT)
         
         defer { sqlite3_finalize(statement) }
         
@@ -526,7 +635,7 @@ class VideoMetadataManager: ObservableObject {
             return
         }
         
-        sqlite3_bind_text(statement, 1, path, -1, nil)
+        sqlite3_bind_text(statement, 1, path, -1, SQLITE_TRANSIENT)
         sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
         sqlite3_bind_int(statement, 3, Int32(videoCount))
         
@@ -637,7 +746,7 @@ class VideoMetadataManager: ObservableObject {
             return
         }
         
-        sqlite3_bind_text(statement, 1, path, -1, nil)
+        sqlite3_bind_text(statement, 1, path, -1, SQLITE_TRANSIENT)
         
         if sqlite3_step(statement) != SQLITE_DONE {
             print("Failed to remove metadata for path: \(path)")

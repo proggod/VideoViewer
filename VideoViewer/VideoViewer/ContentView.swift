@@ -822,27 +822,30 @@ struct FilterSidebar: View {
                                 if let metadata = metadata {
                                     newVideoResolutions[videoFile] = metadata.resolution
                                     newResolutions.insert(metadata.resolution)
-                                    // Cache the result
+                                    // Cache the result with correct file modification date
+                                    let fileAttributes = try? FileManager.default.attributesOfItem(atPath: videoFile.path)
+                                    let modDate = fileAttributes?[.modificationDate] as? Date ?? Date()
                                     let cachedMetadata = VideoMetadataManager.CachedMetadata(
                                         path: videoFile.path,
                                         resolution: metadata.resolution,
                                         duration: metadata.duration ?? 0,
                                         fileSize: metadata.fileSize ?? 0,
-                                        lastModified: Date(),
+                                        lastModified: modDate,
                                         lastScanned: Date()
                                     )
                                     VideoMetadataManager.shared.cacheMetadata(cachedMetadata)
-                                    print("✅ Scanned: \(videoFile.lastPathComponent) -> \(metadata.resolution)")
                                 } else {
                                     // Mark failed files as "Unsupported" so they don't get rescanned every time
                                     newVideoResolutions[videoFile] = "Unsupported"
                                     newResolutions.insert("Unsupported")
+                                    let fileAttributes = try? FileManager.default.attributesOfItem(atPath: videoFile.path)
+                                    let modDate = fileAttributes?[.modificationDate] as? Date ?? Date()
                                     let failedMetadata = VideoMetadataManager.CachedMetadata(
                                         path: videoFile.path,
                                         resolution: "Unsupported",
                                         duration: 0,
                                         fileSize: 0,
-                                        lastModified: Date(),
+                                        lastModified: modDate,
                                         lastScanned: Date()
                                     )
                                     VideoMetadataManager.shared.cacheMetadata(failedMetadata)
@@ -956,10 +959,23 @@ struct FilterSidebar: View {
     
     private func getVideoMetadataAsync(for url: URL) async -> VideoMetadata? {
         // First check if we have cached metadata in the database
-        if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: url.path) {
+        let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: url.path)
+        
+        if let cachedMetadata = cachedMetadata {
             // Check if file has been modified since last scan
             let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
             let currentModDate = attributes?[.modificationDate] as? Date ?? Date()
+            
+            // Debug logging commented out to reduce console spam
+            // if url.lastPathComponent.hasPrefix("!!") {
+            //     let formatter = DateFormatter()
+            //     formatter.dateStyle = .short
+            //     formatter.timeStyle = .medium
+            //     print("🔍 File: \(url.lastPathComponent)")
+            //     print("   📅 File mod date: \(formatter.string(from: currentModDate))")
+            //     print("   💾 Cached date:   \(formatter.string(from: cachedMetadata.lastModified))")
+            //     print("   ⚖️ Use cache? \(cachedMetadata.lastModified >= currentModDate)")
+            // }
             
             // If file hasn't been modified since last scan, use cache
             if cachedMetadata.lastModified >= currentModDate {
@@ -1613,9 +1629,19 @@ struct VideoListView: View {
         .onChange(of: selectedResolutions) { _, _ in
             applyFilters()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .refreshThumbnails)) { _ in
-            // Only reload thumbnails if we don't have any loaded yet
-            if thumbnails.isEmpty {
+        .onReceive(NotificationCenter.default.publisher(for: .refreshThumbnails)) { notification in
+            if let userInfo = notification.userInfo,
+               let videoURL = userInfo["videoURL"] as? URL,
+               let thumbnail = userInfo["thumbnail"] as? NSImage {
+                // Update just this single thumbnail
+                thumbnails[videoURL] = thumbnail
+                
+                // Also cache it locally if on network drive
+                if isNetworkPath(directoryURL) {
+                    cacheThumbnail(thumbnail, for: videoURL)
+                }
+            } else {
+                // Full reload only if no specific thumbnail provided
                 loadThumbnails()
             }
         }
@@ -2063,7 +2089,7 @@ struct VideoListView: View {
             categoryManager.updateVideoPath(from: videoURL.path, to: newURL.path)
             
             // Update the resolution cache for just this file (don't clear everything!)
-            if let resolution = videoResolutions[videoURL] {
+            if videoResolutions[videoURL] != nil {
                 // Add the new file to cache with the same resolution
                 // Resolution is already cached by VideoMetadataManager during scan
                 // Note: The old entry will remain but won't matter since the file no longer exists
@@ -2145,7 +2171,6 @@ struct VideoListView: View {
     }
     
     private func loadVideoMetadata() {
-        let directoryPath = directoryURL.path
         print("📊 Loading video metadata for \(directoryURL.lastPathComponent)")
         
         // First, load cached metadata from database
@@ -2235,7 +2260,8 @@ struct VideoListView: View {
                                 await MainActor.run {
                                     self.videoMetadata[videoFile] = metadata
                                     loadedCount += 1
-                                    print("📊 Loaded metadata for \(videoFile.lastPathComponent): duration=\(metadata.duration ?? 0)s, size=\(metadata.fileSize ?? 0)")
+                                    // Commented out to reduce console spam
+                                    // print("📊 Loaded metadata for \(videoFile.lastPathComponent): duration=\(metadata.duration ?? 0)s, size=\(metadata.fileSize ?? 0)")
                                 }
                             }
                         }
@@ -2251,10 +2277,23 @@ struct VideoListView: View {
     
     private func getVideoMetadataAsync(for url: URL) async -> VideoMetadata? {
         // First check if we have cached metadata in the database
-        if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: url.path) {
+        let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: url.path)
+        
+        if let cachedMetadata = cachedMetadata {
             // Check if file has been modified since last scan
             let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
             let currentModDate = attributes?[.modificationDate] as? Date ?? Date()
+            
+            // Debug logging commented out to reduce console spam
+            // if url.lastPathComponent.hasPrefix("!!") {
+            //     let formatter = DateFormatter()
+            //     formatter.dateStyle = .short
+            //     formatter.timeStyle = .medium
+            //     print("🔍 File: \(url.lastPathComponent)")
+            //     print("   📅 File mod date: \(formatter.string(from: currentModDate))")
+            //     print("   💾 Cached date:   \(formatter.string(from: cachedMetadata.lastModified))")
+            //     print("   ⚖️ Use cache? \(cachedMetadata.lastModified >= currentModDate)")
+            // }
             
             // If file hasn't been modified since last scan, use cache
             if cachedMetadata.lastModified >= currentModDate {
@@ -3186,6 +3225,11 @@ struct VideoPlayerContent: View {
             try pngData.write(to: thumbnailURL)
             print("Thumbnail saved: \(thumbnailURL.path)")
             print("Directory exists: \(FileManager.default.fileExists(atPath: videoInfoURL.path))")
+            
+            // Update just this thumbnail in the list
+            if let image = NSImage(contentsOf: thumbnailURL) {
+                NotificationCenter.default.post(name: .refreshThumbnails, object: nil, userInfo: ["videoURL": videoURL, "thumbnail": image])
+            }
             
             // Play camera sound - use simple beep for reliability
             NSSound.beep()
