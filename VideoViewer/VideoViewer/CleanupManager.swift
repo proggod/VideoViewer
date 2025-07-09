@@ -35,14 +35,14 @@ class CleanupManager: ObservableObject {
     }
     
     private func getDatabasePath() -> String {
-        // Store in user's home directory
-        let homeURL = FileManager.default.homeDirectoryForCurrentUser
-        let appFolder = homeURL.appendingPathComponent(".VideoViewer")
+        // Use configurable path from SettingsManager
+        let dbPath = SettingsManager.shared.getCleanupRulesPath()
+        let dbDir = dbPath.deletingLastPathComponent()
         
         // Create directory if it doesn't exist
-        try? FileManager.default.createDirectory(at: appFolder, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
         
-        return appFolder.appendingPathComponent("cleanup_rules.db").path
+        return dbPath.path
     }
     
     private func openDatabase() {

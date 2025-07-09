@@ -497,106 +497,11 @@ struct DirectoryRow: View {
     }
 }
 
-// Resolution cache manager
 // Video metadata structure
 struct VideoMetadata: Codable {
     let resolution: String
     let duration: TimeInterval?
     let fileSize: Int64?
-}
-
-class VideoMetadataCache {
-    static let shared = VideoMetadataCache()
-    private let cacheKey = "videoMetadataCache"
-    private var cache: [String: [String: VideoMetadata]] = [:] // [directoryPath: [videoPath: metadata]]
-    
-    private init() {
-        loadCache()
-        // Migrate old resolution cache if needed
-        migrateOldCache()
-    }
-    
-    private func loadCache() {
-        if let data = UserDefaults.standard.data(forKey: cacheKey),
-           let decoded = try? JSONDecoder().decode([String: [String: VideoMetadata]].self, from: data) {
-            cache = decoded
-        }
-    }
-    
-    private func saveCache() {
-        if let encoded = try? JSONEncoder().encode(cache) {
-            UserDefaults.standard.set(encoded, forKey: cacheKey)
-        }
-    }
-    
-    private func migrateOldCache() {
-        // Migrate from old ResolutionCache format
-        if let oldData = UserDefaults.standard.data(forKey: "videoResolutionCache"),
-           let oldCache = try? JSONDecoder().decode([String: [String: String]].self, from: oldData) {
-            for (dir, videos) in oldCache {
-                if cache[dir] == nil {
-                    cache[dir] = [:]
-                }
-                for (path, resolution) in videos {
-                    if cache[dir]?[path] == nil {
-                        cache[dir]?[path] = VideoMetadata(resolution: resolution, duration: nil, fileSize: nil)
-                    }
-                }
-            }
-            saveCache()
-            // Remove old cache
-            UserDefaults.standard.removeObject(forKey: "videoResolutionCache")
-        }
-    }
-    
-    func getMetadata(for videoPath: String, in directoryPath: String) -> VideoMetadata? {
-        return cache[directoryPath]?[videoPath]
-    }
-    
-    func setMetadata(_ metadata: VideoMetadata, for videoPath: String, in directoryPath: String) {
-        if cache[directoryPath] == nil {
-            cache[directoryPath] = [:]
-        }
-        cache[directoryPath]?[videoPath] = metadata
-        saveCache()
-    }
-    
-    func getAllMetadata(for directoryPath: String) -> [String: VideoMetadata]? {
-        return cache[directoryPath]
-    }
-    
-    func clearCache(for directoryPath: String) {
-        cache.removeValue(forKey: directoryPath)
-        saveCache()
-    }
-}
-
-// Keep ResolutionCache for backward compatibility
-class ResolutionCache {
-    static let shared = ResolutionCache()
-    
-    func getResolution(for videoPath: String, in directoryPath: String) -> String? {
-        return VideoMetadataCache.shared.getMetadata(for: videoPath, in: directoryPath)?.resolution
-    }
-    
-    func setResolution(_ resolution: String, for videoPath: String, in directoryPath: String) {
-        let existing = VideoMetadataCache.shared.getMetadata(for: videoPath, in: directoryPath)
-        let metadata = VideoMetadata(resolution: resolution, duration: existing?.duration, fileSize: existing?.fileSize)
-        VideoMetadataCache.shared.setMetadata(metadata, for: videoPath, in: directoryPath)
-    }
-    
-    func getResolutions(for directoryPath: String) -> [String: String]? {
-        guard let allMetadata = VideoMetadataCache.shared.getAllMetadata(for: directoryPath) else { return nil }
-        var resolutions: [String: String] = [:]
-        for (path, metadata) in allMetadata {
-            resolutions[path] = metadata.resolution
-        }
-        return resolutions
-    }
-    
-    func clearCache(for directoryPath: String) {
-        VideoMetadataCache.shared.clearCache(for: directoryPath)
-    }
 }
 
 struct FilterSidebar: View {
@@ -605,12 +510,12 @@ struct FilterSidebar: View {
     let directoryURL: URL?
     
     @StateObject private var categoryManager = CategoryManager.shared
-    @State private var availableResolutions: Set<String> = []
-    @State private var videoResolutions: [URL: String] = [:]
-    @State private var isLoadingResolutions = false
-    @State private var scanningStatus = ""
-    @State private var cachedCount = 0
-    @State private var scanningCount = 0
+    @State var availableResolutions: Set<String> = []
+    @State var videoResolutions: [URL: String] = [:]
+    @State var isLoadingResolutions = false
+    @State var scanningStatus = ""
+    @State var cachedCount = 0
+    @State var scanningCount = 0
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -788,13 +693,23 @@ struct FilterSidebar: View {
             }
         }
         .onAppear {
-            loadVideoResolutions()
+            // Defer resolution loading to improve startup performance
+            Task {
+                // Small delay to let UI become responsive first
+                try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
+                await MainActor.run {
+                    loadVideoResolutions()
+                }
+            }
         }
         .onChange(of: directoryURL) { oldValue, newValue in
             if oldValue != newValue {
                 print("🔄 Directory changed from \(oldValue?.lastPathComponent ?? "nil") to \(newValue?.lastPathComponent ?? "nil")")
                 loadVideoResolutions()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("reloadResolutions"))) { _ in
+            loadVideoResolutions()
         }
     }
     
@@ -807,35 +722,41 @@ struct FilterSidebar: View {
         let directoryPath = directoryURL.path
         
         
-        if let cachedMetadata = VideoMetadataCache.shared.getAllMetadata(for: directoryPath) {
-            var newResolutions: Set<String> = []
-            var newVideoResolutions: [URL: String] = [:]
-            
-            for (videoPath, metadata) in cachedMetadata {
-                let videoURL = URL(fileURLWithPath: videoPath)
-                newVideoResolutions[videoURL] = metadata.resolution
+        // Load all cached metadata from database for files in this directory
+        let contents = try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
+        let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
+        let videoFiles = contents?.filter { url in
+            videoExtensions.contains(url.pathExtension.lowercased())
+        } ?? []
+        
+        var newResolutions: Set<String> = []
+        var newVideoResolutions: [URL: String] = [:]
+        
+        for videoFile in videoFiles {
+            if let metadata = VideoMetadataManager.shared.getCachedMetadata(for: videoFile.path) {
+                newVideoResolutions[videoFile] = metadata.resolution
                 newResolutions.insert(metadata.resolution)
             }
+        }
+        
+        if !newResolutions.isEmpty {
+            self.availableResolutions = newResolutions
+            self.videoResolutions = newVideoResolutions
             
-            if !newResolutions.isEmpty {
-                self.availableResolutions = newResolutions
-                self.videoResolutions = newVideoResolutions
-                
-                // Notify immediately with cached data
-                let unsupported = newVideoResolutions.filter { $0.value == "Unsupported" }.map { $0.key }
-                NotificationCenter.default.post(
-                    name: Notification.Name("videoResolutionsUpdated"),
-                    object: nil,
-                    userInfo: [
-                        "resolutions": newVideoResolutions,
-                        "unsupported": Set(unsupported)
-                    ]
-                )
-                
-                self.cachedCount = newVideoResolutions.count
-                
-                print("✅ Loaded \(newVideoResolutions.count) metadata entries from cache for \(directoryPath)")
-            }
+            // Notify immediately with cached data
+            let unsupported = newVideoResolutions.filter { $0.value == "Unsupported" }.map { $0.key }
+            NotificationCenter.default.post(
+                name: Notification.Name("videoResolutionsUpdated"),
+                object: nil,
+                userInfo: [
+                    "resolutions": newVideoResolutions,
+                    "unsupported": Set(unsupported)
+                ]
+            )
+            
+            self.cachedCount = newVideoResolutions.count
+            
+            print("✅ Loaded \(newVideoResolutions.count) metadata entries from cache for \(directoryPath)")
         }
         
         // Then load any missing resolutions asynchronously
@@ -859,7 +780,7 @@ struct FilterSidebar: View {
                 for videoFile in videoFiles {
                     let videoPath = videoFile.path
                     
-                    if let cachedMetadata = VideoMetadataCache.shared.getMetadata(for: videoPath, in: directoryPath) {
+                    if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: videoPath) {
                         newVideoResolutions[videoFile] = cachedMetadata.resolution
                         newResolutions.insert(cachedMetadata.resolution)
                     } else {
@@ -902,14 +823,29 @@ struct FilterSidebar: View {
                                     newVideoResolutions[videoFile] = metadata.resolution
                                     newResolutions.insert(metadata.resolution)
                                     // Cache the result
-                                    VideoMetadataCache.shared.setMetadata(metadata, for: videoFile.path, in: directoryPath)
+                                    let cachedMetadata = VideoMetadataManager.CachedMetadata(
+                                        path: videoFile.path,
+                                        resolution: metadata.resolution,
+                                        duration: metadata.duration ?? 0,
+                                        fileSize: metadata.fileSize ?? 0,
+                                        lastModified: Date(),
+                                        lastScanned: Date()
+                                    )
+                                    VideoMetadataManager.shared.cacheMetadata(cachedMetadata)
                                     print("✅ Scanned: \(videoFile.lastPathComponent) -> \(metadata.resolution)")
                                 } else {
                                     // Mark failed files as "Unsupported" so they don't get rescanned every time
                                     newVideoResolutions[videoFile] = "Unsupported"
                                     newResolutions.insert("Unsupported")
-                                    let failedMetadata = VideoMetadata(resolution: "Unsupported", duration: nil, fileSize: nil)
-                                    VideoMetadataCache.shared.setMetadata(failedMetadata, for: videoFile.path, in: directoryPath)
+                                    let failedMetadata = VideoMetadataManager.CachedMetadata(
+                                        path: videoFile.path,
+                                        resolution: "Unsupported",
+                                        duration: 0,
+                                        fileSize: 0,
+                                        lastModified: Date(),
+                                        lastScanned: Date()
+                                    )
+                                    VideoMetadataManager.shared.cacheMetadata(failedMetadata)
                                     print("❌ Failed to scan: \(videoFile.lastPathComponent)")
                                 }
                                 
@@ -1019,103 +955,52 @@ struct FilterSidebar: View {
     }
     
     private func getVideoMetadataAsync(for url: URL) async -> VideoMetadata? {
-        print("🎥 getVideoMetadataAsync called for: \(url.lastPathComponent)")
-        let asset = AVAsset(url: url)
-        
-        do {
-            // Get file size
-            let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
-            let fileSize = fileAttributes[.size] as? Int64 ?? 0
+        // First check if we have cached metadata in the database
+        if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: url.path) {
+            // Check if file has been modified since last scan
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let currentModDate = attributes?[.modificationDate] as? Date ?? Date()
             
-            // Shorter timeout for network files to fail faster
-            let timeoutSeconds: TimeInterval = url.path.hasPrefix("/Volumes/") ? 3 : 5
-            
-            // Get duration
-            let duration = try await withTimeout(seconds: timeoutSeconds) {
-                try await asset.load(.duration)
+            // If file hasn't been modified since last scan, use cache
+            if cachedMetadata.lastModified >= currentModDate {
+                return VideoMetadata(
+                    resolution: cachedMetadata.resolution,
+                    duration: cachedMetadata.duration,
+                    fileSize: cachedMetadata.fileSize
+                )
             }
-            let durationSeconds = CMTimeGetSeconds(duration)
-            
-            // Get video tracks for resolution
-            let tracks = try await withTimeout(seconds: timeoutSeconds) {
-                try await asset.loadTracks(withMediaType: .video)
-            }
-            guard let track = tracks.first else { 
-                // No video track, but we still have file size
-                return VideoMetadata(resolution: "Unknown", duration: durationSeconds, fileSize: fileSize)
-            }
-            
-            let naturalSize = try await withTimeout(seconds: timeoutSeconds) {
-                try await track.load(.naturalSize)
-            }
-            let preferredTransform = try await withTimeout(seconds: timeoutSeconds) {
-                try await track.load(.preferredTransform)
-            }
-            
-            let size = naturalSize.applying(preferredTransform)
-            let height = Int(abs(size.height))
-            
-            // Common resolutions
-            let resolution: String
-            switch height {
-            case 2160: resolution = "4K"
-            case 1440: resolution = "1440p"
-            case 1080: resolution = "1080p"
-            case 720: resolution = "720p"
-            case 480: resolution = "480p"
-            case 360: resolution = "360p"
-            default:
-                if height > 2160 {
-                    resolution = "8K+"
-                } else if height > 0 {
-                    resolution = "\(height)p"
-                } else {
-                    resolution = "Unknown"
-                }
-            }
-            
-            return VideoMetadata(resolution: resolution, duration: durationSeconds, fileSize: fileSize)
-        } catch {
-            // Check if it's an unsupported format error
-            if let avError = error as? AVError {
-                switch avError.code {
-                case .fileFormatNotRecognized:
-                    print("Unsupported format: \(url.lastPathComponent)")
-                    // Still try to get file size
-                    if let fileAttributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-                       let fileSize = fileAttributes[.size] as? Int64 {
-                        return VideoMetadata(resolution: "Unsupported", duration: nil, fileSize: fileSize)
-                    }
-                    return VideoMetadata(resolution: "Unsupported", duration: nil, fileSize: nil)
-                default:
-                    print("Error loading video metadata for \(url.lastPathComponent): \(error)")
-                }
-            } else {
-                print("Error loading video metadata for \(url.lastPathComponent): \(error)")
-            }
-            return nil
         }
+        
+        // Scan the video file for metadata
+        let result = await VideoMetadataManager.shared.getVideoMetadataAsyncInternal(for: url)
+        
+        if let result = result {
+            // Get file size and cache the metadata
+            let fileAttributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let fileSize = fileAttributes?[.size] as? Int64 ?? 0
+            let modDate = fileAttributes?[.modificationDate] as? Date ?? Date()
+            
+            // Cache the metadata
+            let cachedMetadata = VideoMetadataManager.CachedMetadata(
+                path: url.path,
+                resolution: result.resolution,
+                duration: result.duration,
+                fileSize: fileSize,
+                lastModified: modDate,
+                lastScanned: Date()
+            )
+            VideoMetadataManager.shared.cacheMetadata(cachedMetadata)
+            
+            return VideoMetadata(
+                resolution: result.resolution,
+                duration: result.duration,
+                fileSize: fileSize
+            )
+        }
+        
+        return nil
     }
     
-    private func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
-        return try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
-            }
-            
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                throw TimeoutError()
-            }
-            
-            guard let result = try await group.next() else {
-                throw TimeoutError()
-            }
-            
-            group.cancelAll()
-            return result
-        }
-    }
     
     private func getResolutionHeight(_ resolution: String) -> Int {
         switch resolution {
@@ -1167,8 +1052,6 @@ struct FilterSidebar: View {
         .toggleStyle(CheckboxToggleStyle())
     }
 }
-
-struct TimeoutError: Error {}
 
 // Helper functions for formatting
 extension ContentView {
@@ -2120,6 +2003,9 @@ struct VideoListView: View {
             // Remove from database (all category associations)
             // This happens automatically due to the video path no longer existing
             
+            // Remove from metadata database
+            VideoMetadataManager.shared.removeMetadata(for: videoURL.path)
+            
             // Remove just this file from the local state - no need to reload everything
             localVideoFiles.removeAll { $0 == videoURL }
             videoFiles = localVideoFiles
@@ -2128,6 +2014,9 @@ struct VideoListView: View {
             
             // Apply filters to update the view
             applyFilters()
+            
+            // Post notification to reload resolutions in the filter sidebar
+            NotificationCenter.default.post(name: Notification.Name("reloadResolutions"), object: nil)
             
             // Clear the deletion reference
             videoToDelete = nil
@@ -2176,7 +2065,7 @@ struct VideoListView: View {
             // Update the resolution cache for just this file (don't clear everything!)
             if let resolution = videoResolutions[videoURL] {
                 // Add the new file to cache with the same resolution
-                ResolutionCache.shared.setResolution(resolution, for: newURL.path, in: directoryURL.path)
+                // Resolution is already cached by VideoMetadataManager during scan
                 // Note: The old entry will remain but won't matter since the file no longer exists
             }
             
@@ -2213,7 +2102,7 @@ struct VideoListView: View {
         editingText = ""
         
         // Don't clear the cache - just reload to find new files
-        // ResolutionCache.shared.clearCache(for: directoryURL.path)
+        // No need to clear cache - database is used directly
         
         // Reload all data
         loadVideoFiles()
@@ -2221,7 +2110,7 @@ struct VideoListView: View {
         applyFilters()
         
         // The resolution loading will happen automatically via the existing
-        // ResolutionCache mechanism when the view refreshes
+        // Database lookup when the view refreshes
         // It will only scan new files that aren't in the cache
         
         print("Directory refreshed: \(directoryURL.path)")
@@ -2259,34 +2148,41 @@ struct VideoListView: View {
         let directoryPath = directoryURL.path
         print("📊 Loading video metadata for \(directoryURL.lastPathComponent)")
         
-        // First, load cached metadata
+        // First, load cached metadata from database
         var incompleteMetadataFiles: [URL] = []
-        if let cachedMetadata = VideoMetadataCache.shared.getAllMetadata(for: directoryPath) {
-            var loadedCount = 0
-            var incompleteCount = 0
-            for (videoPath, metadata) in cachedMetadata {
-                let videoURL = URL(fileURLWithPath: videoPath)
-                if localVideoFiles.contains(videoURL) {
-                    videoMetadata[videoURL] = metadata
-                    loadedCount += 1
-                    
-                    // Check if metadata is incomplete (missing duration or file size)
-                    if metadata.duration == nil || metadata.fileSize == nil {
-                        incompleteMetadataFiles.append(videoURL)
-                        incompleteCount += 1
-                    }
+        var loadedCount = 0
+        var incompleteCount = 0
+        
+        // Load metadata from database for each video file
+        for videoFile in localVideoFiles {
+            if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: videoFile.path) {
+                let metadata = VideoMetadata(
+                    resolution: cachedMetadata.resolution,
+                    duration: cachedMetadata.duration,
+                    fileSize: cachedMetadata.fileSize
+                )
+                videoMetadata[videoFile] = metadata
+                loadedCount += 1
+                
+                // Check if metadata is incomplete (missing duration or file size)
+                if cachedMetadata.duration == 0 || cachedMetadata.fileSize == 0 {
+                    incompleteMetadataFiles.append(videoFile)
+                    incompleteCount += 1
                 }
             }
-            print("📊 Loaded \(loadedCount) cached metadata entries")
+        }
+        
+        print("📊 Loaded \(loadedCount) cached metadata entries from database")
+        if incompleteCount > 0 {
             print("📊 Found \(incompleteCount) entries with incomplete metadata (missing duration/size)")
-            
-            // Debug: Show a sample of what was loaded
-            if let firstVideo = localVideoFiles.first, let metadata = videoMetadata[firstVideo] {
-                print("📊 Sample metadata - File: \(firstVideo.lastPathComponent)")
-                print("   Resolution: \(metadata.resolution)")
-                print("   Duration: \(metadata.duration != nil ? "\(metadata.duration!) seconds (\(ContentView.formatDuration(metadata.duration)))" : "MISSING")")
-                print("   Size: \(metadata.fileSize != nil ? "\(metadata.fileSize!) bytes (\(ContentView.formatFileSize(metadata.fileSize)))" : "MISSING")")
-            }
+        }
+        
+        // Debug: Show a sample of what was loaded
+        if let firstVideo = localVideoFiles.first, let metadata = videoMetadata[firstVideo] {
+            print("📊 Sample metadata - File: \(firstVideo.lastPathComponent)")
+            print("   Resolution: \(metadata.resolution)")
+            print("   Duration: \(metadata.duration != nil ? "\(metadata.duration!) seconds (\(ContentView.formatDuration(metadata.duration)))" : "MISSING")")
+            print("   Size: \(metadata.fileSize != nil ? "\(metadata.fileSize!) bytes (\(ContentView.formatFileSize(metadata.fileSize)))" : "MISSING")")
         }
         
         // Then load any missing metadata asynchronously
@@ -2333,7 +2229,7 @@ struct VideoListView: View {
                         for await (videoFile, metadata) in group {
                             if let metadata = metadata {
                                 // Cache the result
-                                VideoMetadataCache.shared.setMetadata(metadata, for: videoFile.path, in: directoryPath)
+                                // Metadata is already cached by VideoMetadataManager
                                 
                                 // Update UI
                                 await MainActor.run {
@@ -2354,103 +2250,52 @@ struct VideoListView: View {
     }
     
     private func getVideoMetadataAsync(for url: URL) async -> VideoMetadata? {
-        print("🎥 getVideoMetadataAsync called for: \(url.lastPathComponent)")
-        let asset = AVAsset(url: url)
-        
-        do {
-            // Get file size
-            let fileAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
-            let fileSize = fileAttributes[.size] as? Int64 ?? 0
+        // First check if we have cached metadata in the database
+        if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: url.path) {
+            // Check if file has been modified since last scan
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let currentModDate = attributes?[.modificationDate] as? Date ?? Date()
             
-            // Shorter timeout for network files to fail faster
-            let timeoutSeconds: TimeInterval = url.path.hasPrefix("/Volumes/") ? 3 : 5
-            
-            // Get duration
-            let duration = try await withTimeout(seconds: timeoutSeconds) {
-                try await asset.load(.duration)
+            // If file hasn't been modified since last scan, use cache
+            if cachedMetadata.lastModified >= currentModDate {
+                return VideoMetadata(
+                    resolution: cachedMetadata.resolution,
+                    duration: cachedMetadata.duration,
+                    fileSize: cachedMetadata.fileSize
+                )
             }
-            let durationSeconds = CMTimeGetSeconds(duration)
-            
-            // Get video tracks for resolution
-            let tracks = try await withTimeout(seconds: timeoutSeconds) {
-                try await asset.loadTracks(withMediaType: .video)
-            }
-            guard let track = tracks.first else { 
-                // No video track, but we still have file size
-                return VideoMetadata(resolution: "Unknown", duration: durationSeconds, fileSize: fileSize)
-            }
-            
-            let naturalSize = try await withTimeout(seconds: timeoutSeconds) {
-                try await track.load(.naturalSize)
-            }
-            let preferredTransform = try await withTimeout(seconds: timeoutSeconds) {
-                try await track.load(.preferredTransform)
-            }
-            
-            let size = naturalSize.applying(preferredTransform)
-            let height = Int(abs(size.height))
-            
-            // Common resolutions
-            let resolution: String
-            switch height {
-            case 2160: resolution = "4K"
-            case 1440: resolution = "1440p"
-            case 1080: resolution = "1080p"
-            case 720: resolution = "720p"
-            case 480: resolution = "480p"
-            case 360: resolution = "360p"
-            default:
-                if height > 2160 {
-                    resolution = "8K+"
-                } else if height > 0 {
-                    resolution = "\(height)p"
-                } else {
-                    resolution = "Unknown"
-                }
-            }
-            
-            return VideoMetadata(resolution: resolution, duration: durationSeconds, fileSize: fileSize)
-        } catch {
-            // Check if it's an unsupported format error
-            if let avError = error as? AVError {
-                switch avError.code {
-                case .fileFormatNotRecognized:
-                    print("Unsupported format: \(url.lastPathComponent)")
-                    // Still try to get file size
-                    if let fileAttributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-                       let fileSize = fileAttributes[.size] as? Int64 {
-                        return VideoMetadata(resolution: "Unsupported", duration: nil, fileSize: fileSize)
-                    }
-                    return VideoMetadata(resolution: "Unsupported", duration: nil, fileSize: nil)
-                default:
-                    print("Error loading video metadata for \(url.lastPathComponent): \(error)")
-                }
-            } else {
-                print("Error loading video metadata for \(url.lastPathComponent): \(error)")
-            }
-            return nil
         }
+        
+        // Scan the video file for metadata
+        let result = await VideoMetadataManager.shared.getVideoMetadataAsyncInternal(for: url)
+        
+        if let result = result {
+            // Get file size and cache the metadata
+            let fileAttributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let fileSize = fileAttributes?[.size] as? Int64 ?? 0
+            let modDate = fileAttributes?[.modificationDate] as? Date ?? Date()
+            
+            // Cache the metadata
+            let cachedMetadata = VideoMetadataManager.CachedMetadata(
+                path: url.path,
+                resolution: result.resolution,
+                duration: result.duration,
+                fileSize: fileSize,
+                lastModified: modDate,
+                lastScanned: Date()
+            )
+            VideoMetadataManager.shared.cacheMetadata(cachedMetadata)
+            
+            return VideoMetadata(
+                resolution: result.resolution,
+                duration: result.duration,
+                fileSize: fileSize
+            )
+        }
+        
+        return nil
     }
     
-    private func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
-        return try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
-            }
-            
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                throw TimeoutError()
-            }
-            
-            guard let result = try await group.next() else {
-                throw TimeoutError()
-            }
-            
-            group.cancelAll()
-            return result
-        }
-    }
     
     // MARK: - Multi-Selection Functions
     
@@ -3004,6 +2849,7 @@ struct VideoPlayerContent: View {
     @StateObject private var categoryManager = CategoryManager.shared
     @State private var selectedCategories: Set<Int> = []
     @State private var showCategories: Bool = false
+    @State private var isPlayerReady: Bool = false
     
     init(videoURL: URL) {
         self.videoURL = videoURL
@@ -3015,26 +2861,30 @@ struct VideoPlayerContent: View {
     private func createPlayer() {
         guard player == nil else { return }
         
-        let newPlayer = AVPlayer(url: videoURL)
+        // Create player on main queue to avoid threading issues
+        DispatchQueue.main.async {
+            let newPlayer = AVPlayer(url: videoURL)
+            
+            // Restore last saved volume and mute state
+            if UserDefaults.standard.object(forKey: "lastVideoVolume") != nil {
+                newPlayer.volume = UserDefaults.standard.float(forKey: "lastVideoVolume")
+            } else {
+                newPlayer.volume = 1.0
+            }
         
-        // Restore last saved volume and mute state
-        if UserDefaults.standard.object(forKey: "lastVideoVolume") != nil {
-            newPlayer.volume = UserDefaults.standard.float(forKey: "lastVideoVolume")
-        } else {
-            newPlayer.volume = 1.0
+            // Restore mute state
+            newPlayer.isMuted = UserDefaults.standard.bool(forKey: "lastVideoMuted")
+            
+            self.player = newPlayer
+            self.isPlayerReady = true
+            print("Created player with volume: \(newPlayer.volume), muted: \(newPlayer.isMuted)")
         }
-        
-        // Restore mute state
-        newPlayer.isMuted = UserDefaults.standard.bool(forKey: "lastVideoMuted")
-        
-        player = newPlayer
-        print("Created player with volume: \(newPlayer.volume), muted: \(newPlayer.isMuted)")
     }
     
     var body: some View {
         VStack(spacing: 0) {
-            if let player = player {
-                VideoPlayer(player: player)
+            if let player = player, isPlayerReady {
+                SafeVideoPlayer(player: player)
                     .onAppear {
                         player.play()
                         
@@ -3241,6 +3091,7 @@ struct VideoPlayerContent: View {
             // Clear all player references
             print("Clearing player references")
             self.player = nil
+            self.isPlayerReady = false
             
             print("=== VideoPlayer onDisappear END ===")
         }

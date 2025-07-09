@@ -2,6 +2,10 @@ import Foundation
 import SwiftUI
 import SQLite3
 
+extension Notification.Name {
+    static let databaseRestored = Notification.Name("databaseRestored")
+}
+
 // MARK: - CategoryManager
 
 class CategoryManager: ObservableObject {
@@ -10,6 +14,7 @@ class CategoryManager: ObservableObject {
     @Published var categories: [Category] = []
     @Published var categoryGroups: [CategoryGroup] = []
     private var db: OpaquePointer?
+    private var videoCategoryCache: [String: Set<Int>] = [:]
     
     struct Category: Identifiable, Equatable {
         let id: Int
@@ -31,6 +36,35 @@ class CategoryManager: ObservableObject {
         cleanupEmptyCategories()
         loadCategoryGroups()
         loadCategories()
+        
+        // Listen for database restore notifications
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDatabaseRestored),
+            name: .databaseRestored,
+            object: nil
+        )
+    }
+    
+    @objc private func handleDatabaseRestored() {
+        // Close and reopen database
+        sqlite3_close(db)
+        db = nil
+        openDatabase()
+        createTables()
+        
+        // Clear cache
+        videoCategoryCache.removeAll()
+        
+        // Reload all data
+        loadCategoryGroups()
+        loadCategories()
+        
+        // Post update notification
+        NotificationCenter.default.post(
+            name: Notification.Name("categoriesUpdated"),
+            object: nil
+        )
     }
     
     deinit {
@@ -38,14 +72,14 @@ class CategoryManager: ObservableObject {
     }
     
     private func getDatabasePath() -> String {
-        // For now, use a global location in Application Support
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appFolder = appSupport.appendingPathComponent("VideoViewer")
+        // Use configurable path from SettingsManager
+        let dbPath = SettingsManager.shared.getDatabasePath()
+        let dbDir = dbPath.deletingLastPathComponent()
         
         // Create directory if it doesn't exist
-        try? FileManager.default.createDirectory(at: appFolder, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
         
-        return appFolder.appendingPathComponent("image_data.db").path
+        return dbPath.path
     }
     
     func getDatabasePath(for directoryURL: URL) -> String {
@@ -250,6 +284,16 @@ class CategoryManager: ObservableObject {
             
             if sqlite3_step(statement) == SQLITE_DONE {
                 sqlite3_finalize(statement)
+                
+                // Clear cache entries that contain this category
+                for (path, categories) in videoCategoryCache {
+                    if categories.contains(id) {
+                        var updatedCategories = categories
+                        updatedCategories.remove(id)
+                        videoCategoryCache[path] = updatedCategories
+                    }
+                }
+                
                 loadCategories()
                 // Notify that categories have been updated
                 NotificationCenter.default.post(
@@ -267,6 +311,11 @@ class CategoryManager: ObservableObject {
     // MARK: - Video Category Management
     
     func getCategoriesForVideo(videoPath: String) -> Set<Int> {
+        // Check cache first
+        if let cached = videoCategoryCache[videoPath] {
+            return cached
+        }
+        
         var categoryIds = Set<Int>()
         
         let queryString = "SELECT category_id FROM video_categories WHERE video_path = ?"
@@ -283,6 +332,10 @@ class CategoryManager: ObservableObject {
         }
         
         sqlite3_finalize(statement)
+        
+        // Cache the result
+        videoCategoryCache[videoPath] = categoryIds
+        
         return categoryIds
     }
     
@@ -300,6 +353,14 @@ class CategoryManager: ObservableObject {
             }
             
             sqlite3_finalize(statement)
+            
+            // Update cache
+            if var cached = videoCategoryCache[videoPath] {
+                cached.insert(categoryId)
+                videoCategoryCache[videoPath] = cached
+            } else {
+                videoCategoryCache[videoPath] = [categoryId]
+            }
         } else {
             // Remove category from video
             let deleteString = "DELETE FROM video_categories WHERE video_path = ? AND category_id = ?"
@@ -313,6 +374,12 @@ class CategoryManager: ObservableObject {
             }
             
             sqlite3_finalize(statement)
+            
+            // Update cache
+            if var cached = videoCategoryCache[videoPath] {
+                cached.remove(categoryId)
+                videoCategoryCache[videoPath] = cached
+            }
         }
     }
     
@@ -346,6 +413,12 @@ class CategoryManager: ObservableObject {
             
             if sqlite3_step(statement) == SQLITE_DONE {
                 print("Successfully updated video path from '\(oldPath)' to '\(newPath)'")
+                
+                // Update cache
+                if let cachedCategories = videoCategoryCache[oldPath] {
+                    videoCategoryCache[newPath] = cachedCategories
+                    videoCategoryCache.removeValue(forKey: oldPath)
+                }
             } else {
                 let errorMessage = String(cString: sqlite3_errmsg(db))
                 print("Failed to update video path: \(errorMessage)")
