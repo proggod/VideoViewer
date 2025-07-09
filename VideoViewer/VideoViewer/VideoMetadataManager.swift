@@ -24,7 +24,10 @@ class VideoMetadataManager: ObservableObject {
         let networkDbPath = getNetworkDatabasePath()
         if networkDbPath.hasPrefix("/Volumes/") {
             print("📁 Network database detected, enabling local cache")
-            SettingsManager.shared.useLocalDatabaseCache = true
+            // Defer the published property change to avoid SwiftUI update conflicts
+            DispatchQueue.main.async {
+                SettingsManager.shared.useLocalDatabaseCache = true
+            }
             syncFromNetworkToLocal()
         }
         

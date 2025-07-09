@@ -2,47 +2,21 @@ import Cocoa
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var saveWindowFrameTimer: Timer?
-    func applicationDidFinishLaunching(_ aNotification: Notification) {
-        // Delay window frame restoration to ensure SwiftUI has created the window
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.setupWindowFrameRestoration()
-        }
-    }
     
-    private func setupWindowFrameRestoration() {
-        // Find the main window
-        guard let window = NSApplication.shared.windows.first(where: { $0.isVisible }) else {
-            // Try again after a short delay if window isn't ready
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.setupWindowFrameRestoration()
-            }
-            return
-        }
-        
-        // Restore window frame if saved
-        if let frameString = UserDefaults.standard.string(forKey: "MainWindowFrame"),
-           let frame = NSRectFromString(frameString) as NSRect? {
-            // Ensure the frame is valid and on screen
-            let screenFrame = NSScreen.main?.frame ?? NSRect.zero
-            if screenFrame.intersects(frame) {
-                window.setFrame(frame, display: true, animate: false)
-                print("Restored window frame: \(frame)")
-            }
-        }
-        
-        // Observe window frame changes to save them
+    func applicationDidFinishLaunching(_ aNotification: Notification) {
+        // Set up window frame saving for all windows
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowDidResize(_:)),
             name: NSWindow.didResizeNotification,
-            object: window
+            object: nil
         )
         
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowDidMove(_:)),
             name: NSWindow.didMoveNotification,
-            object: window
+            object: nil
         )
     }
 
@@ -60,10 +34,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @objc private func windowDidResize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window.isVisible && window.title.contains("Video") else { return }
         debouncedSaveWindowFrame()
     }
     
     @objc private func windowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window.isVisible && window.title.contains("Video") else { return }
         debouncedSaveWindowFrame()
     }
     

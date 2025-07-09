@@ -11,35 +11,27 @@ struct VideoViewerApp: App {
     
     var body: some Scene {
         WindowGroup {
-            Group {
-                if !startupComplete && showStartupProgress {
+            ContentView()
+                .frame(minWidth: 800, minHeight: 600)
+                .restoreWindowFrame()
+                .onAppear {
+                    if settingsManager.isFirstRun && !hasShownFirstRun {
+                        hasShownFirstRun = true
+                        settingsManager.showFirstRunDialog {}
+                    }
+                }
+                .sheet(isPresented: $showingSettings) {
+                    SettingsView()
+                }
+                .sheet(isPresented: $showStartupProgress) {
                     StartupProgressView {
                         startupComplete = true
+                        showStartupProgress = false
                     }
-                } else {
-                    ContentView()
-                        .frame(minWidth: 800, minHeight: 600)
-                        .onAppear {
-                            if settingsManager.isFirstRun && !hasShownFirstRun {
-                                hasShownFirstRun = true
-                                settingsManager.showFirstRunDialog {}
-                            }
-                        }
+                    .frame(width: 600, height: 400)
+                    .interactiveDismissDisabled()
                 }
-            }
-            .sheet(isPresented: $showingSettings) {
-                SettingsView()
-            }
-            .onAppear {
-                // Always show startup progress
-                if !startupComplete {
-                    showStartupProgress = true
-                }
-            }
         }
-        .windowResizability(.contentSize)
-        .defaultPosition(.center)
-        .defaultSize(width: 1200, height: 800)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings...") {

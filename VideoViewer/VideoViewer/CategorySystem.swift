@@ -35,7 +35,10 @@ class CategoryManager: ObservableObject {
         let dbPath = SettingsManager.shared.getDatabasePath()
         if dbPath.path.hasPrefix("/Volumes/") {
             print("📁 Network database detected for categories, enabling local cache")
-            SettingsManager.shared.useLocalDatabaseCache = true
+            // Defer the published property change to avoid SwiftUI update conflicts
+            DispatchQueue.main.async {
+                SettingsManager.shared.useLocalDatabaseCache = true
+            }
             syncFromNetworkToLocal()
         }
         

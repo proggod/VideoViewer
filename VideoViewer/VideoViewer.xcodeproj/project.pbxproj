@@ -17,6 +17,7 @@
 		7620386A2E1A69DC00C9A24A /* VideoConversionProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762038692E1A69DC00C9A24A /* VideoConversionProgressView.swift */; };
 		7620386B2E1A69DC00C9A24A /* FFmpegManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 762038682E1A69DC00C9A24A /* FFmpegManager.swift */; };
 		7620386F2E1A6C0400C9A24A /* ffmpeg in Resources */ = {isa = PBXBuildFile; fileRef = 7620386E2E1A6C0400C9A24A /* ffmpeg */; };
+		76A216242E1E6476000869F3 /* WindowAccessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76A216232E1E6476000869F3 /* WindowAccessor.swift */; };
 		A7B6C443FB9545E8B9G94D32 /* MKVRemuxProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G4D8C651EE9948B9D3G95F73 /* MKVRemuxProgressView.swift */; };
 		AE540F25AB7C4E8BADAFB80D /* VideoMetadataManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CB6BF9BA72E49649EFB9F6E /* VideoMetadataManager.swift */; };
 		B405A64B022027AD62B06928 /* CategorySystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = F76E539E45EE7215CB3D371B /* CategorySystem.swift */; };
@@ -48,6 +49,7 @@
 		762038682E1A69DC00C9A24A /* FFmpegManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FFmpegManager.swift; sourceTree = "<group>"; };
 		762038692E1A69DC00C9A24A /* VideoConversionProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoConversionProgressView.swift; sourceTree = "<group>"; };
 		7620386E2E1A6C0400C9A24A /* ffmpeg */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; path = ffmpeg; sourceTree = "<group>"; };
+		76A216232E1E6476000869F3 /* WindowAccessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowAccessor.swift; sourceTree = "<group>"; };
 		991F43130D6A46DFB5609F7C /* SafeVideoPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeVideoPlayer.swift; sourceTree = "<group>"; };
 		A1FB6A99500A60C5735E9FEE /* CleanupPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupPreviewView.swift; sourceTree = "<group>"; };
 		A9055C2ABFA03E1D37A069F5 /* CleanupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupView.swift; sourceTree = "<group>"; };
@@ -90,6 +92,7 @@
 		1D1234541234567890ABCDEF /* VideoViewer */ = {
 			isa = PBXGroup;
 			children = (
+				76A216232E1E6476000869F3 /* WindowAccessor.swift */,
 				7620386E2E1A6C0400C9A24A /* ffmpeg */,
 				762038682E1A69DC00C9A24A /* FFmpegManager.swift */,
 				762038692E1A69DC00C9A24A /* VideoConversionProgressView.swift */,
@@ -205,6 +208,7 @@
 				B405A64B022027AD62B06928 /* CategorySystem.swift in Sources */,
 				DAD0E942B31406E7F4B44C63 /* CleanupManager.swift in Sources */,
 				3C4F5F832B06936FBE499439 /* CleanupView.swift in Sources */,
+				76A216242E1E6476000869F3 /* WindowAccessor.swift in Sources */,
 				BA2E6615FB8334936B7482B2 /* CleanupPreviewView.swift in Sources */,
 				C84B7291FB9445C8A7F92B47 /* ScreenshotProgressView.swift in Sources */,
 				E5D9A832FB9545D9B8F83C21 /* MKVRemuxer.swift in Sources */,
