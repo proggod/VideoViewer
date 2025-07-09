@@ -189,7 +189,7 @@ struct ContentView: View {
                                 selectedCategories: $selectedFilterCategories,
                                 selectedResolutions: $selectedResolutions,
                                 directoryURL: selectedURL,
-                                videoMetadata: videoMetadata
+                                videoMetadata: $videoMetadata
                             )
                             .frame(minHeight: 200)
                             .layoutPriority(0.5)
@@ -635,7 +635,7 @@ struct FilterSidebar: View {
     @Binding var selectedCategories: Set<Int>
     @Binding var selectedResolutions: Set<String>
     let directoryURL: URL?
-    let videoMetadata: [URL: VideoMetadata]
+    @Binding var videoMetadata: [URL: VideoMetadata]
     
     @StateObject private var categoryManager = CategoryManager.shared
     @State var availableResolutions: Set<String> = []
@@ -832,15 +832,19 @@ struct FilterSidebar: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("videoMetadataLoaded"))) { _ in
             updateAvailableResolutions()
         }
+        .onChange(of: videoMetadata) { oldValue, newValue in
+            updateAvailableResolutions()
+        }
     }
     
     private func updateAvailableResolutions() {
         // Get unique resolutions from the video metadata that's already loaded
         let resolutions = Set(videoMetadata.values.compactMap { $0.resolution })
+        print("📊 updateAvailableResolutions: Found \(videoMetadata.count) metadata entries with \(resolutions.count) unique resolutions")
         // Only update if changed to prevent excessive updates
         if availableResolutions != resolutions {
             availableResolutions = resolutions
-            // Removed logging to reduce console spam
+            print("📊 Updated available resolutions: \(resolutions.sorted())")
         }
     }
     
@@ -1852,9 +1856,11 @@ struct VideoListView: View {
         if videoFiles.count > 100 {
             // Load first 100 immediately for quick display
             let initialBatch = Array(videoFiles.prefix(100))
+            var tempMetadata: [URL: VideoMetadata] = [:]
+            
             for videoFile in initialBatch {
                 if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: videoFile.path) {
-                    videoMetadata[videoFile] = VideoMetadata(
+                    tempMetadata[videoFile] = VideoMetadata(
                         resolution: cachedMetadata.resolution,
                         duration: cachedMetadata.duration,
                         fileSize: cachedMetadata.fileSize
@@ -1863,7 +1869,18 @@ struct VideoListView: View {
                 }
             }
             
+            // Update the binding all at once
+            videoMetadata.merge(tempMetadata) { _, new in new }
+            
             print("📊 Loaded initial \(loadedCount) metadata entries")
+            
+            // Apply filters to show initial results immediately
+            applyFilters()
+            
+            // Force the binding to update by posting notification with a small delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                NotificationCenter.default.post(name: Notification.Name("videoMetadataLoaded"), object: nil)
+            }
             
             // Load the rest in background
             Task.detached(priority: .background) {

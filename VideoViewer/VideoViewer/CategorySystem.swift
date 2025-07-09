@@ -654,6 +654,7 @@ class CategoryManager: ObservableObject {
     // MARK: - Database Sync
     
     private var syncTimer: Timer?
+    private var lastSyncTime = Date()
     
     private func syncFromNetworkToLocal() {
         let networkPath = getNetworkDatabasePath()
@@ -703,7 +704,7 @@ class CategoryManager: ObservableObject {
             // Copy local database to network
             try FileManager.default.removeItem(atPath: networkPath)
             try FileManager.default.copyItem(atPath: localPath, toPath: networkPath)
-            print("✅ Synced local category changes to network database")
+            // Removed sync logging to reduce console spam
         } catch {
             print("❌ Failed to sync categories to network: \(error)")
         }
@@ -712,7 +713,16 @@ class CategoryManager: ObservableObject {
     private func startBackgroundSync() {
         // Sync every 30 seconds
         syncTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in
-            self.syncFromLocalToNetwork()
+            self.performSync()
+        }
+    }
+    
+    private func performSync() {
+        // Only sync if at least 30 seconds have passed
+        let now = Date()
+        if now.timeIntervalSince(lastSyncTime) >= 30.0 {
+            syncFromLocalToNetwork()
+            lastSyncTime = now
         }
     }
     
