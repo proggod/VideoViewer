@@ -6,6 +6,7 @@ class VideoMetadataManager: ObservableObject {
     static let shared = VideoMetadataManager()
     private var db: OpaquePointer?
     private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    private let dbQueue = DispatchQueue(label: "com.videoviewer.dbqueue", qos: .userInitiated)
     
     struct CachedMetadata {
         let path: String
@@ -18,6 +19,15 @@ class VideoMetadataManager: ObservableObject {
     
     private init() {
         print("🚀 VideoMetadataManager.init() called")
+        
+        // Check if database is on network drive
+        let networkDbPath = getNetworkDatabasePath()
+        if networkDbPath.hasPrefix("/Volumes/") {
+            print("📁 Network database detected, enabling local cache")
+            SettingsManager.shared.useLocalDatabaseCache = true
+            syncFromNetworkToLocal()
+        }
+        
         openDatabase()  // This will now delete corrupted databases
         createTables()
         
@@ -33,6 +43,11 @@ class VideoMetadataManager: ObservableObject {
         )
         
         print("🚀 VideoMetadataManager initialized with db: \(db != nil ? "✅" : "❌")")
+        
+        // Start background sync if using local cache
+        if SettingsManager.shared.useLocalDatabaseCache {
+            startBackgroundSync()
+        }
     }
     
     private func cleanupCorruptedResolutions() {
@@ -130,11 +145,13 @@ class VideoMetadataManager: ObservableObject {
         createTables()
     }
     
-    deinit {
-        sqlite3_close(db)
-    }
     
     private func getDatabasePath() -> String {
+        // Check if we should use local cache
+        if SettingsManager.shared.useLocalDatabaseCache {
+            return getLocalCachePath()
+        }
+        
         let dbPath = SettingsManager.shared.getDatabasePath()
         let dbDir = dbPath.deletingLastPathComponent()
         
@@ -146,6 +163,20 @@ class VideoMetadataManager: ObservableObject {
         // Create directory if it doesn't exist
         try? FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
         
+        return metadataDbPath.path
+    }
+    
+    private func getLocalCachePath() -> String {
+        let tempDir = FileManager.default.temporaryDirectory
+        let cacheDir = tempDir.appendingPathComponent("VideoViewer_Cache")
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        return cacheDir.appendingPathComponent("video_metadata.db").path
+    }
+    
+    private func getNetworkDatabasePath() -> String {
+        let dbPath = SettingsManager.shared.getDatabasePath()
+        let dbDir = dbPath.deletingLastPathComponent()
+        let metadataDbPath = dbDir.appendingPathComponent("video_metadata.db")
         return metadataDbPath.path
     }
     
@@ -264,31 +295,62 @@ class VideoMetadataManager: ObservableObject {
         }
     }
     
+    func getUniqueResolutions(for directoryPath: String) -> [String] {
+        return dbQueue.sync {
+            guard let db = db else {
+                print("❌ Database not initialized in getUniqueResolutions")
+                return []
+            }
+            
+            let query = "SELECT DISTINCT resolution FROM video_metadata WHERE path LIKE ? ORDER BY resolution"
+            var statement: OpaquePointer?
+            
+            guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
+                print("❌ Failed to prepare getUniqueResolutions query")
+                return []
+            }
+            
+            let pattern = "\(directoryPath)/%"
+            sqlite3_bind_text(statement, 1, pattern, -1, SQLITE_TRANSIENT)
+            
+            defer { sqlite3_finalize(statement) }
+            
+            var resolutions: [String] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let resolution = String(cString: sqlite3_column_text(statement, 0))
+                resolutions.append(resolution)
+            }
+            
+            return resolutions
+        }
+    }
+    
     func getCachedMetadata(for path: String) -> CachedMetadata? {
-        guard let db = db else {
-            print("❌ Database not initialized in getCachedMetadata")
-            return nil
-        }
-        
-        let query = "SELECT resolution, duration, file_size, last_modified, last_scanned FROM video_metadata WHERE path = ?"
-        var statement: OpaquePointer?
-        
-        guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
-            print("❌ Failed to prepare getCachedMetadata query")
-            return nil
-        }
-        
-        sqlite3_bind_text(statement, 1, path, -1, SQLITE_TRANSIENT)
-        
-        defer { sqlite3_finalize(statement) }
-        
-        let result = sqlite3_step(statement)
-        if result == SQLITE_ROW {
-            let resolution = String(cString: sqlite3_column_text(statement, 0))
-            let duration = sqlite3_column_double(statement, 1)
-            let fileSize = sqlite3_column_int64(statement, 2)
-            let lastModified = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
-            let lastScanned = Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
+        return dbQueue.sync {
+            guard let db = db else {
+                print("❌ Database not initialized in getCachedMetadata")
+                return nil
+            }
+            
+            let query = "SELECT resolution, duration, file_size, last_modified, last_scanned FROM video_metadata WHERE path = ?"
+            var statement: OpaquePointer?
+            
+            guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
+                print("❌ Failed to prepare getCachedMetadata query")
+                return nil
+            }
+            
+            sqlite3_bind_text(statement, 1, path, -1, SQLITE_TRANSIENT)
+            
+            defer { sqlite3_finalize(statement) }
+            
+            let result = sqlite3_step(statement)
+            if result == SQLITE_ROW {
+                let resolution = String(cString: sqlite3_column_text(statement, 0))
+                let duration = sqlite3_column_double(statement, 1)
+                let fileSize = sqlite3_column_int64(statement, 2)
+                let lastModified = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
+                let lastScanned = Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
             
             // Debug logging commented out to reduce console spam
             // let filename = URL(fileURLWithPath: path).lastPathComponent
@@ -297,33 +359,37 @@ class VideoMetadataManager: ObservableObject {
             //     print("   Resolution: \(resolution)")
             // }
             
-            return CachedMetadata(
-                path: path,
-                resolution: resolution,
-                duration: duration,
-                fileSize: fileSize,
-                lastModified: lastModified,
-                lastScanned: lastScanned
-            )
-        } else {
-            // Debug logging commented out to reduce console spam
-            // let filename = URL(fileURLWithPath: path).lastPathComponent
-            // if filename.hasPrefix("!!") {
-            //     print("❌ Not found in DB: \(filename)")
-            //     print("   SQL result: \(result)")
-            //     print("   Path: \(path)")
-            // }
+                return CachedMetadata(
+                    path: path,
+                    resolution: resolution,
+                    duration: duration,
+                    fileSize: fileSize,
+                    lastModified: lastModified,
+                    lastScanned: lastScanned
+                )
+            } else {
+                // Debug logging commented out to reduce console spam
+                // let filename = URL(fileURLWithPath: path).lastPathComponent
+                // if filename.hasPrefix("!!") {
+                //     print("❌ Not found in DB: \(filename)")
+                //     print("   SQL result: \(result)")
+                //     print("   Path: \(path)")
+                // }
+            }
+            
+            return nil
         }
-        
-        return nil
     }
     
     func cacheMetadata(_ metadata: CachedMetadata) {
-        // Check if database is initialized
-        guard let db = db else {
-            print("❌ Database not initialized when trying to cache")
-            return
-        }
+        dbQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Check if database is initialized
+            guard let db = self.db else {
+                print("❌ Database not initialized when trying to cache")
+                return
+            }
         
         // Validate resolution before caching - check if it's a valid pattern
         let validPattern = metadata.resolution.range(of: "^(4K|8K\\+|\\d+p|SD|Unsupported|Unknown)$", options: .regularExpression) != nil
@@ -369,20 +435,21 @@ class VideoMetadataManager: ObservableObject {
             //     print("   Resolution: \(metadata.resolution)")
             //     print("   Rows changed: \(sqlite3_changes(db))")
             // }
+            }
+            
+            sqlite3_finalize(statement)
+            
+            // Verify the write was successful - commented out to reduce console spam
+            // let filename = URL(fileURLWithPath: metadata.path).lastPathComponent
+            // if filename.hasPrefix("!!") {
+            //     // Immediately try to read it back
+            //     if let verifyMetadata = getCachedMetadata(for: metadata.path) {
+            //         print("✅ Verified write: \(filename) is now in database")
+            //     } else {
+            //         print("❌ Write verification failed: \(filename) not found after caching")
+            //     }
+            // }
         }
-        
-        sqlite3_finalize(statement)
-        
-        // Verify the write was successful - commented out to reduce console spam
-        // let filename = URL(fileURLWithPath: metadata.path).lastPathComponent
-        // if filename.hasPrefix("!!") {
-        //     // Immediately try to read it back
-        //     if let verifyMetadata = getCachedMetadata(for: metadata.path) {
-        //         print("✅ Verified write: \(filename) is now in database")
-        //     } else {
-        //         print("❌ Write verification failed: \(filename) not found after caching")
-        //     }
-        // }
     }
     
     func getVideoMetadata(for url: URL, forceRefresh: Bool = false) -> (resolution: String, duration: Double)? {
@@ -753,5 +820,81 @@ class VideoMetadataManager: ObservableObject {
         }
         
         sqlite3_finalize(statement)
+    }
+    
+    // MARK: - Database Sync
+    
+    private func syncFromNetworkToLocal() {
+        let networkPath = getNetworkDatabasePath()
+        let localPath = getLocalCachePath()
+        
+        // Check if network database exists
+        guard FileManager.default.fileExists(atPath: networkPath) else {
+            print("📁 No network database to sync from")
+            return
+        }
+        
+        print("🔄 Syncing database from network to local cache...")
+        print("  From: \(networkPath)")
+        print("  To: \(localPath)")
+        
+        do {
+            // Remove old local cache if exists
+            if FileManager.default.fileExists(atPath: localPath) {
+                try FileManager.default.removeItem(atPath: localPath)
+            }
+            
+            // Copy network database to local
+            try FileManager.default.copyItem(atPath: networkPath, toPath: localPath)
+            print("✅ Database synced to local cache")
+        } catch {
+            print("❌ Failed to sync database: \(error)")
+        }
+    }
+    
+    private func syncFromLocalToNetwork() {
+        guard SettingsManager.shared.useLocalDatabaseCache else { return }
+        
+        let networkPath = getNetworkDatabasePath()
+        let localPath = getLocalCachePath()
+        
+        // Only sync if local database exists
+        guard FileManager.default.fileExists(atPath: localPath) else { return }
+        
+        do {
+            // Create backup of network database
+            let backupPath = networkPath + ".backup"
+            if FileManager.default.fileExists(atPath: networkPath) {
+                try? FileManager.default.removeItem(atPath: backupPath)
+                try FileManager.default.copyItem(atPath: networkPath, toPath: backupPath)
+            }
+            
+            // Copy local database to network
+            try FileManager.default.removeItem(atPath: networkPath)
+            try FileManager.default.copyItem(atPath: localPath, toPath: networkPath)
+            print("✅ Synced local changes to network database")
+        } catch {
+            print("❌ Failed to sync to network: \(error)")
+        }
+    }
+    
+    private var syncTimer: Timer?
+    
+    private func startBackgroundSync() {
+        // Sync every 30 seconds
+        syncTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in
+            self.dbQueue.async {
+                self.syncFromLocalToNetwork()
+            }
+        }
+    }
+    
+    deinit {
+        syncTimer?.invalidate()
+        // Final sync before closing
+        if SettingsManager.shared.useLocalDatabaseCache {
+            syncFromLocalToNetwork()
+        }
+        sqlite3_close(db)
     }
 }

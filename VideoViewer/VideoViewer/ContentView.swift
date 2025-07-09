@@ -42,6 +42,35 @@ class FileItem: ObservableObject, Identifiable {
         self.isReadable = isReadable
     }
     
+    func refreshReadability() {
+        // Re-check readability and restore bookmark if needed
+        print("🔄 Refreshing readability for: \(url.path)")
+        var isReadable = FileManager.default.isReadableFile(atPath: url.path)
+        print("  Initial isReadable: \(isReadable)")
+        
+        if !isReadable, let bookmarkData = UserDefaults.standard.data(forKey: "bookmark_\(url.path)") {
+            print("  Found bookmark data, attempting to restore...")
+            do {
+                var isStale = false
+                let resolvedURL = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+                print("  Resolved URL: \(resolvedURL.path), isStale: \(isStale)")
+                if resolvedURL == url && !isStale {
+                    let success = resolvedURL.startAccessingSecurityScopedResource()
+                    print("  startAccessingSecurityScopedResource: \(success)")
+                    isReadable = FileManager.default.isReadableFile(atPath: url.path)
+                    print("  After bookmark: isReadable = \(isReadable)")
+                }
+            } catch {
+                print("  ❌ Failed to resolve bookmark: \(error)")
+            }
+        }
+        
+        print("  Final isReadable: \(isReadable), was: \(self.isReadable)")
+        if self.isReadable != isReadable {
+            self.isReadable = isReadable
+        }
+    }
+    
     func loadChildren() {
         guard isDirectory && !hasLoadedChildren else { return }
         hasLoadedChildren = true
@@ -52,15 +81,37 @@ class FileItem: ObservableObject, Identifiable {
             return
         }
         
+        // Load children asynchronously to prevent UI blocking
+        Task {
+            await loadChildrenAsync()
+        }
+    }
+    
+    @MainActor
+    func loadChildrenAsync() async {
         do {
             let contents = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
-            children = contents.compactMap { url in
-                var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue {
-                    return FileItem(url: url)
+            let loadedChildren = await withTaskGroup(of: FileItem?.self) { group in
+                for childUrl in contents {
+                    group.addTask {
+                        var isDir: ObjCBool = false
+                        if FileManager.default.fileExists(atPath: childUrl.path, isDirectory: &isDir) && isDir.boolValue {
+                            return FileItem(url: childUrl)
+                        }
+                        return nil
+                    }
                 }
-                return nil
-            }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                
+                var items: [FileItem] = []
+                for await item in group {
+                    if let item = item {
+                        items.append(item)
+                    }
+                }
+                return items.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            }
+            
+            children = loadedChildren
         } catch let error as NSError {
             // Handle specific permission errors quietly for mounted volumes
             if error.domain == NSCocoaErrorDomain && error.code == 257 {
@@ -137,7 +188,8 @@ struct ContentView: View {
                             FilterSidebar(
                                 selectedCategories: $selectedFilterCategories,
                                 selectedResolutions: $selectedResolutions,
-                                directoryURL: selectedURL
+                                directoryURL: selectedURL,
+                                videoMetadata: videoMetadata
                             )
                             .frame(minHeight: 200)
                             .layoutPriority(0.5)
@@ -153,7 +205,8 @@ struct ContentView: View {
                             videoToPlay: $videoToPlay,
                             selectedCategories: $selectedFilterCategories,
                             selectedResolutions: $selectedResolutions,
-                            showFilters: $showFilters
+                            showFilters: $showFilters,
+                            videoMetadata: $videoMetadata
                         )
                     } else {
                         VStack(spacing: 20) {
@@ -227,6 +280,20 @@ struct ContentView: View {
                 if !isStale {
                     _ = url.startAccessingSecurityScopedResource()
                     selectedURL = url
+                    
+                    // Also ensure we have the specific bookmark for this directory
+                    if UserDefaults.standard.data(forKey: "bookmark_\(url.path)") == nil {
+                        // Save a specific bookmark for this directory too
+                        if let specificBookmark = try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) {
+                            UserDefaults.standard.set(specificBookmark, forKey: "bookmark_\(url.path)")
+                        }
+                    }
+                    
+                    // Notify browser to refresh after bookmark restoration
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        NotificationCenter.default.post(name: .refreshBrowser, object: nil)
+                    }
+                    
                     return
                 }
             } catch {
@@ -311,6 +378,73 @@ struct DirectoryRow: View {
     @Binding var expandedPaths: Set<String>
     @State private var isExpanded = false
     
+    private func requestAccessToDirectory(for url: URL) {
+        // Try to trigger system permission dialog by attempting to read the directory
+        Task {
+            do {
+                // This should trigger the system's permission dialog
+                _ = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
+                
+                // If we get here, we have access - refresh the item
+                await MainActor.run {
+                    item.refreshReadability()
+                    if item.isReadable {
+                        if !item.hasLoadedChildren {
+                            item.loadChildren()
+                        }
+                        isExpanded = true
+                        expandedPaths.insert(url.path)
+                    }
+                }
+            } catch {
+                // If that didn't work, fall back to the open panel
+                await MainActor.run {
+                    let openPanel = NSOpenPanel()
+                    openPanel.canChooseDirectories = true
+                    openPanel.canChooseFiles = false
+                    openPanel.allowsMultipleSelection = false
+                    openPanel.message = "Grant access to '\(url.lastPathComponent)'"
+                    openPanel.prompt = "Grant Access"
+                    openPanel.directoryURL = url
+                    
+                    if openPanel.runModal() == .OK, let selectedUrl = openPanel.url {
+                        // Save bookmark for persistent access
+                        do {
+                            let bookmarkData = try selectedUrl.bookmarkData(
+                                options: .withSecurityScope,
+                                includingResourceValuesForKeys: nil,
+                                relativeTo: nil
+                            )
+                            UserDefaults.standard.set(bookmarkData, forKey: "bookmark_\(selectedUrl.path)")
+                            print("✅ Saved bookmark for: \(selectedUrl.path)")
+                            
+                            // Start accessing the resource immediately
+                            let success = selectedUrl.startAccessingSecurityScopedResource()
+                            print("🔓 Started accessing security scoped resource: \(success)")
+                            
+                            // Refresh the item's readability status
+                            item.refreshReadability()
+                            
+                            // If now readable, expand it but don't change selection
+                            print("📁 Item readable after refresh: \(item.isReadable)")
+                            if item.isReadable {
+                                // Don't change the selection - user might have a subdirectory selected
+                                // Just expand this directory to show its contents
+                                if !item.hasLoadedChildren {
+                                    item.loadChildren()
+                                }
+                                isExpanded = true
+                                expandedPaths.insert(selectedUrl.path)
+                            }
+                        } catch {
+                            print("❌ Failed to save bookmark: \(error)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     var body: some View {
         let isSelected = selectedURL == item.url
         let isInSelectedPath = selectedURL?.path.hasPrefix(item.url.path) ?? false
@@ -362,16 +496,18 @@ struct DirectoryRow: View {
             )
             .contentShape(Rectangle())
             .onTapGesture {
+                // Always set as selected URL
                 selectedURL = item.url
-                if item.isDirectory && !item.isReadable {
-                    // Request permission for this directory
-                    requestAccessToDirectory()
-                } else if item.isDirectory && item.isReadable {
+                
+                if item.isDirectory && item.isReadable {
+                    // If readable, expand it
                     if !item.hasLoadedChildren {
                         item.loadChildren()
                     }
                     isExpanded = true
+                    expandedPaths.insert(item.url.path)
                 }
+                // If not readable, the main content view will handle requesting permission
             }
             
             if isExpanded && item.isDirectory {
@@ -433,29 +569,19 @@ struct DirectoryRow: View {
     }
     
     private func requestAccessToDirectory() {
-        // Show simple permission dialog first
-        let alert = NSAlert()
-        alert.messageText = "Permission Required"
-        alert.informativeText = "This app needs permission to access \(item.url.lastPathComponent). Click 'Grant Access' to allow browsing this folder."
-        alert.addButton(withTitle: "Grant Access")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .informational
+        // Show file picker directly - no need for two dialogs
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseDirectories = true
+        openPanel.canChooseFiles = false
+        openPanel.allowsMultipleSelection = false
+        openPanel.message = "Grant access to '\(item.url.lastPathComponent)' by selecting it"
+        openPanel.prompt = "Grant Access"
+        openPanel.allowedContentTypes = []
         
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            // User clicked "Grant Access" - now show file picker
-            let openPanel = NSOpenPanel()
-            openPanel.canChooseDirectories = true
-            openPanel.canChooseFiles = false
-            openPanel.allowsMultipleSelection = false
-            openPanel.message = "Navigate to and select \(item.url.lastPathComponent) to grant access"
-            openPanel.prompt = "Grant Access"
-            openPanel.allowedContentTypes = []
-            
-            // Try to navigate to the parent directory if possible
-            if let parent = item.url.deletingLastPathComponent().path.isEmpty ? nil : item.url.deletingLastPathComponent() {
-                openPanel.directoryURL = parent
-            }
+        // Try to navigate to the parent directory if possible
+        if let parent = item.url.deletingLastPathComponent().path.isEmpty ? nil : item.url.deletingLastPathComponent() {
+            openPanel.directoryURL = parent
+        }
             
             openPanel.begin { panelResponse in
                 if panelResponse == .OK, let selectedURL = openPanel.url {
@@ -481,7 +607,8 @@ struct DirectoryRow: View {
                                 item.hasLoadedChildren = false
                                 item.loadChildren()
                                 isExpanded = true
-                                print("Updated item readability for: \(item.url.path)")
+                                self.selectedURL = item.url  // Now select the folder
+                                print("Updated item readability and selected: \(item.url.path)")
                             }
                             
                             // Force full refresh
@@ -494,14 +621,11 @@ struct DirectoryRow: View {
                     print("User cancelled folder selection")
                 }
             }
-        } else {
-            print("User cancelled permission request")
-        }
     }
 }
 
 // Video metadata structure
-struct VideoMetadata: Codable {
+struct VideoMetadata: Codable, Equatable {
     let resolution: String
     let duration: TimeInterval?
     let fileSize: Int64?
@@ -511,6 +635,7 @@ struct FilterSidebar: View {
     @Binding var selectedCategories: Set<Int>
     @Binding var selectedResolutions: Set<String>
     let directoryURL: URL?
+    let videoMetadata: [URL: VideoMetadata]
     
     @StateObject private var categoryManager = CategoryManager.shared
     @State var availableResolutions: Set<String> = []
@@ -696,23 +821,26 @@ struct FilterSidebar: View {
             }
         }
         .onAppear {
-            // Defer resolution loading to improve startup performance
-            Task {
-                // Small delay to let UI become responsive first
-                try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
-                await MainActor.run {
-                    loadVideoResolutions()
-                }
-            }
+            updateAvailableResolutions()
         }
         .onChange(of: directoryURL) { oldValue, newValue in
             if oldValue != newValue {
                 print("🔄 Directory changed from \(oldValue?.lastPathComponent ?? "nil") to \(newValue?.lastPathComponent ?? "nil")")
-                loadVideoResolutions()
+                updateAvailableResolutions()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("reloadResolutions"))) { _ in
-            loadVideoResolutions()
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("videoMetadataLoaded"))) { _ in
+            updateAvailableResolutions()
+        }
+    }
+    
+    private func updateAvailableResolutions() {
+        // Get unique resolutions from the video metadata that's already loaded
+        let resolutions = Set(videoMetadata.values.compactMap { $0.resolution })
+        // Only update if changed to prevent excessive updates
+        if availableResolutions != resolutions {
+            availableResolutions = resolutions
+            // Removed logging to reduce console spam
         }
     }
     
@@ -721,92 +849,120 @@ struct FilterSidebar: View {
         
         print("🔄 loadVideoResolutions called for: \(directoryURL.lastPathComponent)")
         
-        // First, load from cache
-        let directoryPath = directoryURL.path
-        
-        
-        // Load all cached metadata from database for files in this directory
-        let contents = try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
-        let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
-        let videoFiles = contents?.filter { url in
-            videoExtensions.contains(url.pathExtension.lowercased())
-        } ?? []
-        
-        var newResolutions: Set<String> = []
-        var newVideoResolutions: [URL: String] = [:]
-        
-        for videoFile in videoFiles {
-            if let metadata = VideoMetadataManager.shared.getCachedMetadata(for: videoFile.path) {
-                newVideoResolutions[videoFile] = metadata.resolution
-                newResolutions.insert(metadata.resolution)
-            }
-        }
-        
-        if !newResolutions.isEmpty {
-            self.availableResolutions = newResolutions
-            self.videoResolutions = newVideoResolutions
-            
-            // Notify immediately with cached data
-            let unsupported = newVideoResolutions.filter { $0.value == "Unsupported" }.map { $0.key }
-            NotificationCenter.default.post(
-                name: Notification.Name("videoResolutionsUpdated"),
-                object: nil,
-                userInfo: [
-                    "resolutions": newVideoResolutions,
-                    "unsupported": Set(unsupported)
-                ]
-            )
-            
-            self.cachedCount = newVideoResolutions.count
-            
-            print("✅ Loaded \(newVideoResolutions.count) metadata entries from cache for \(directoryPath)")
-        }
-        
-        // Then load any missing resolutions asynchronously
+        // Set loading state immediately
         isLoadingResolutions = true
         
+        // Load everything asynchronously to prevent UI blocking
         Task {
-            // Get all video files in directory
-            let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
-            
-            do {
-                let contents = try FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
-                let videoFiles = contents.filter { url in
-                    videoExtensions.contains(url.pathExtension.lowercased())
-                }
+            let directoryPath = directoryURL.path
                 
-                var newResolutions: Set<String> = []
-                var newVideoResolutions: [URL: String] = [:]
-                
-                // First pass: collect all cached resolutions immediately
-                var uncachedFiles: [URL] = []
-                for videoFile in videoFiles {
-                    let videoPath = videoFile.path
-                    
-                    if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: videoPath) {
-                        newVideoResolutions[videoFile] = cachedMetadata.resolution
-                        newResolutions.insert(cachedMetadata.resolution)
-                    } else {
-                        uncachedFiles.append(videoFile)
+                // First, try to restore bookmark access if we have one
+                if let bookmarkData = UserDefaults.standard.data(forKey: "bookmark_\(directoryURL.path)") {
+                    do {
+                        var isStale = false
+                        let restoredURL = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+                        if restoredURL == directoryURL && !isStale {
+                            _ = restoredURL.startAccessingSecurityScopedResource()
+                            print("✅ Restored security-scoped access from bookmark for: \(directoryURL.lastPathComponent)")
+                        }
+                    } catch {
+                        print("Failed to restore bookmark for \(directoryURL.path): \(error)")
                     }
                 }
                 
-                // Update UI with cached data immediately
-                let initialCachedCount = newVideoResolutions.count
-                await MainActor.run {
-                    self.availableResolutions = newResolutions
-                    self.videoResolutions = newVideoResolutions
-                    self.cachedCount = initialCachedCount
-                    self.scanningCount = uncachedFiles.count
+                // Load directory contents in background thread to avoid blocking
+                let contents: [URL]
+                do {
+                    contents = try await Task.detached(priority: .userInitiated) {
+                        try FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)
+                    }.value
+                } catch {
+                    print("Error loading video files: \(error)")
+                    // Handle permission errors
+                    let nsError = error as NSError
+                    if nsError.domain == NSCocoaErrorDomain && (nsError.code == 256 || nsError.code == 257) {
+                        // Don't prompt here - let getVideoFilesAsync handle it
+                        // Just exit early
+                        self.isLoadingResolutions = false
+                    }
+                    return
                 }
                 
-                print("📊 Resolution status - Cached: \(newVideoResolutions.count), Need scanning: \(uncachedFiles.count)")
-                if uncachedFiles.count > 0 {
-                    print("📊 Files needing scan: \(uncachedFiles.map { $0.lastPathComponent })")
+                let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
+                let videoFiles = contents.filter { url in
+                    videoExtensions.contains(url.pathExtension.lowercased())
+                }
+            
+            print("📁 Found \(videoFiles.count) video files in directory")
+            
+            // For large directories, just get unique resolutions from database
+            if videoFiles.count > 500 {
+                print("📊 Large directory - getting unique resolutions from database")
+                
+                // Get unique resolutions directly from database - much faster!
+                Task.detached(priority: .userInitiated) {
+                    let uniqueResolutions = VideoMetadataManager.shared.getUniqueResolutions(for: directoryPath)
+                    
+                    await MainActor.run {
+                        self.availableResolutions = Set(uniqueResolutions)
+                        self.isLoadingResolutions = false
+                        print("✅ Found \(uniqueResolutions.count) unique resolutions: \(uniqueResolutions.sorted())")
+                    }
                 }
                 
-                // Second pass: load uncached files in parallel (limit concurrency)
-                if !uncachedFiles.isEmpty {
+                return // Exit early, we don't need the file mappings for the filter
+            }
+            
+            // For smaller directories, process normally
+            var newResolutions: Set<String> = []
+            var newVideoResolutions: [URL: String] = [:]
+            
+            for videoFile in videoFiles {
+                if let metadata = VideoMetadataManager.shared.getCachedMetadata(for: videoFile.path) {
+                    newVideoResolutions[videoFile] = metadata.resolution
+                    newResolutions.insert(metadata.resolution)
+                }
+            }
+            
+            // Final update and notification
+            await MainActor.run {
+                if !newResolutions.isEmpty {
+                    // Notify with cached data
+                    let unsupported = newVideoResolutions.filter { $0.value == "Unsupported" }.map { $0.key }
+                    NotificationCenter.default.post(
+                        name: Notification.Name("videoResolutionsUpdated"),
+                        object: nil,
+                        userInfo: [
+                            "resolutions": newVideoResolutions,
+                            "unsupported": Set(unsupported)
+                        ]
+                    )
+                    
+                    print("✅ Loaded \(newVideoResolutions.count) metadata entries from cache for \(directoryPath)")
+                }
+            }
+            
+            // Continue with loading any missing resolutions
+            // Identify files that need scanning
+            var uncachedFiles: [URL] = []
+            for videoFile in videoFiles {
+                if newVideoResolutions[videoFile] == nil {
+                    uncachedFiles.append(videoFile)
+                }
+            }
+            
+            // Update scanning count
+            await MainActor.run {
+                self.scanningCount = uncachedFiles.count
+            }
+            
+            print("📊 Resolution status - Cached: \(newVideoResolutions.count), Need scanning: \(uncachedFiles.count)")
+            if uncachedFiles.count > 0 {
+                print("📊 First few files needing scan: \(uncachedFiles.prefix(5).map { $0.lastPathComponent })")
+            }
+            
+            // Second pass: load uncached files in parallel (limit concurrency)
+            if !uncachedFiles.isEmpty {
                     // Process in smaller batches of 3 for network drives to reduce load
                     let batchSize = directoryURL.path.hasPrefix("/Volumes/") ? 3 : 5
                     for i in stride(from: 0, to: uncachedFiles.count, by: batchSize) {
@@ -900,60 +1056,10 @@ struct FilterSidebar: View {
                         ]
                     )
                 }
-            } catch {
-                print("Error loading video files: \(error)")
-                await MainActor.run {
-                    self.isLoadingResolutions = false
-                }
-            }
         }
     }
     
-    private func getVideoResolution(for url: URL) -> String? {
-        let asset = AVAsset(url: url)
-        
-        // Use synchronous loading for now to maintain compatibility
-        let semaphore = DispatchSemaphore(value: 0)
-        var resolution: String?
-        
-        Task {
-            do {
-                let tracks = try await asset.loadTracks(withMediaType: .video)
-                guard let track = tracks.first else {
-                    semaphore.signal()
-                    return
-                }
-                
-                let naturalSize = try await track.load(.naturalSize)
-                let preferredTransform = try await track.load(.preferredTransform)
-                
-                let size = naturalSize.applying(preferredTransform)
-                let height = Int(abs(size.height))
-                
-                // Common resolutions
-                switch height {
-                case 2160: resolution = "4K"
-                case 1440: resolution = "1440p"
-                case 1080: resolution = "1080p"
-                case 720: resolution = "720p"
-                case 480: resolution = "480p"
-                case 360: resolution = "360p"
-                default:
-                    if height > 2160 {
-                        resolution = "8K+"
-                    } else if height > 0 {
-                        resolution = "\(height)p"
-                    }
-                }
-            } catch {
-                print("Error loading video resolution: \(error)")
-            }
-            semaphore.signal()
-        }
-        
-        semaphore.wait()
-        return resolution
-    }
+    // Removed synchronous version - use getVideoResolutionAsync instead
     
     private func getVideoResolutionAsync(for url: URL) async -> String? {
         let metadata = await getVideoMetadataAsync(for: url)
@@ -1108,6 +1214,7 @@ struct VideoListView: View {
     @Binding var selectedCategories: Set<Int>
     @Binding var selectedResolutions: Set<String>
     @Binding var showFilters: Bool
+    @Binding var videoMetadata: [URL: VideoMetadata]
     
     @State private var localVideoFiles: [URL] = []
     @State private var filteredVideoFiles: [URL] = []
@@ -1115,7 +1222,6 @@ struct VideoListView: View {
     @State private var thumbnails: [URL: NSImage] = [:]
     @State private var thumbnailSize: Double = UserDefaults.standard.double(forKey: "thumbnailSize") == 0 ? 150 : UserDefaults.standard.double(forKey: "thumbnailSize")
     @State private var videoResolutions: [URL: String] = [:]
-    @State private var videoMetadata: [URL: VideoMetadata] = [:]
     @State private var unsupportedFiles: Set<URL> = []
     @StateObject private var categoryManager = CategoryManager.shared
     @State private var searchText: String = ""
@@ -1140,6 +1246,7 @@ struct VideoListView: View {
     @State private var selectedVideos: Set<URL> = []
     @State private var lastSelectedVideo: URL?
     @State private var singleTapTimer: Timer?
+    @State private var isLoadingData = false
     
     let videoExtensions = ["mp4", "mov", "avi", "mkv", "m4v", "webm", "flv", "wmv", "mpg", "mpeg"]
     
@@ -1407,7 +1514,7 @@ struct VideoListView: View {
                             ForEach(filteredVideoFiles, id: \.self) { videoURL in
                                 VideoGridItem(
                                     videoURL: videoURL,
-                                    thumbnail: thumbnails[videoURL],
+                                    thumbnail: thumbnailForVideo(videoURL),
                                     size: thumbnailSize,
                                     editingVideo: $editingVideo,
                                     editingText: $editingText,
@@ -1520,7 +1627,7 @@ struct VideoListView: View {
                         List(filteredVideoFiles, id: \.self, selection: $selectedVideos) { videoURL in
                             VideoListRow(
                                 videoURL: videoURL,
-                                thumbnail: thumbnails[videoURL],
+                                thumbnail: thumbnailForVideo(videoURL),
                                 editingVideo: $editingVideo,
                                 editingText: $editingText,
                                 onRename: renameVideo,
@@ -1579,9 +1686,9 @@ struct VideoListView: View {
                 isPresented: $showingCleanupPreview,
                 onComplete: {
                     // Reload files after cleanup
-                    loadVideoFiles()
-                    loadThumbnails()
-                    applyFilters()
+                    Task {
+                        await initializeVideoList()
+                    }
                 }
             )
         }
@@ -1623,16 +1730,16 @@ struct VideoListView: View {
         }
         .onAppear {
             print("🎬 VideoListView onAppear")
-            loadVideoFiles()
-            loadThumbnails()
-            applyFilters()
+            Task {
+                await initializeVideoList()
+            }
         }
         .onChange(of: directoryURL) { _, _ in
             // Clear metadata when switching directories
             videoMetadata.removeAll()
-            loadVideoFiles()
-            loadThumbnails()
-            applyFilters()
+            Task {
+                await initializeVideoList()
+            }
         }
         .onChange(of: selectedCategories) { _, _ in
             applyFilters()
@@ -1667,9 +1774,9 @@ struct VideoListView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .refreshBrowser)) { _ in
             videoMetadata.removeAll()
-            loadVideoFiles()
-            loadThumbnails()
-            applyFilters()
+            Task {
+                await initializeVideoList()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("categoriesUpdated"))) { _ in
             // Refresh the filtered list when categories are updated
@@ -1694,12 +1801,114 @@ struct VideoListView: View {
         }
     }
     
+    private func initializeVideoList() async {
+        // Prevent concurrent loads
+        guard !isLoadingData else { return }
+        isLoadingData = true
+        
+        defer { 
+            Task { @MainActor in
+                isLoadingData = false
+            }
+        }
+        
+        // Load files first
+        await loadVideoFilesAsync()
+        // Then load thumbnails
+        await loadThumbnailsAsync()
+        // Finally apply filters
+        await MainActor.run {
+            applyFilters()
+        }
+    }
+    
     private func loadVideoFiles() {
         print("📂 loadVideoFiles() called")
-        localVideoFiles = getVideoFiles()
+        Task {
+            await loadVideoFilesAsync()
+        }
+    }
+    
+    @MainActor
+    private func loadVideoFilesAsync() async {
+        localVideoFiles = await getVideoFilesAsync()
         videoFiles = localVideoFiles
         print("📂 Found \(localVideoFiles.count) video files")
-        loadVideoMetadata()
+        
+        // Load metadata for all video files from cache
+        await loadMetadataFromCache()
+    }
+    
+    @MainActor
+    private func loadMetadataFromCache() async {
+        var loadedCount = 0
+        
+        // Create a local copy to avoid concurrent modification issues
+        let videoFiles = Array(localVideoFiles)
+        
+        print("📊 Starting metadata load for \(videoFiles.count) files...")
+        
+        // For large directories, load metadata in background
+        if videoFiles.count > 100 {
+            // Load first 100 immediately for quick display
+            let initialBatch = Array(videoFiles.prefix(100))
+            for videoFile in initialBatch {
+                if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: videoFile.path) {
+                    videoMetadata[videoFile] = VideoMetadata(
+                        resolution: cachedMetadata.resolution,
+                        duration: cachedMetadata.duration,
+                        fileSize: cachedMetadata.fileSize
+                    )
+                    loadedCount += 1
+                }
+            }
+            
+            print("📊 Loaded initial \(loadedCount) metadata entries")
+            
+            // Load the rest in background
+            Task.detached(priority: .background) {
+                
+                for i in 100..<videoFiles.count {
+                    if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: videoFiles[i].path) {
+                        await MainActor.run {
+                            self.videoMetadata[videoFiles[i]] = VideoMetadata(
+                                resolution: cachedMetadata.resolution,
+                                duration: cachedMetadata.duration,
+                                fileSize: cachedMetadata.fileSize
+                            )
+                        }
+                    }
+                    
+                    // Yield frequently
+                    if i % 50 == 0 {
+                        try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+                    }
+                }
+                
+                print("📊 Background metadata load complete")
+                
+                // Notify that metadata loading is complete
+                await MainActor.run {
+                    NotificationCenter.default.post(name: Notification.Name("videoMetadataLoaded"), object: nil)
+                }
+            }
+        } else {
+            // For small directories, load all at once
+            for videoFile in videoFiles {
+                if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: videoFile.path) {
+                    videoMetadata[videoFile] = VideoMetadata(
+                        resolution: cachedMetadata.resolution,
+                        duration: cachedMetadata.duration,
+                        fileSize: cachedMetadata.fileSize
+                    )
+                    loadedCount += 1
+                }
+            }
+            print("📊 Loaded \(loadedCount) metadata entries from cache")
+        }
+        
+        // Notify that metadata loading is complete
+        NotificationCenter.default.post(name: Notification.Name("videoMetadataLoaded"), object: nil)
     }
     
     private func applyFilters() {
@@ -1737,7 +1946,7 @@ struct VideoListView: View {
         // Filter by resolution
         if !selectedResolutions.isEmpty {
             filtered = filtered.filter { videoURL in
-                if let resolution = videoResolutions[videoURL] {
+                if let resolution = videoMetadata[videoURL]?.resolution {
                     return selectedResolutions.contains(resolution)
                 }
                 return false
@@ -1785,12 +1994,64 @@ struct VideoListView: View {
     }
     
     private func getVideoFiles() -> [URL] {
+        // Synchronous version kept for compatibility, but should not be used
+        // Use getVideoFilesAsync instead
+        return []
+    }
+    
+    private func getVideoFilesAsync() async -> [URL] {
         let fileManager = FileManager.default
-        do {
-            let contents = try fileManager.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
-            let videoFiles = contents.filter { url in
-                videoExtensions.contains(url.pathExtension.lowercased())
+        
+        // First, try to restore bookmark access if we have one
+        if let bookmarkData = UserDefaults.standard.data(forKey: "bookmark_\(directoryURL.path)") {
+            do {
+                var isStale = false
+                let restoredURL = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+                if restoredURL == directoryURL && !isStale {
+                    _ = restoredURL.startAccessingSecurityScopedResource()
+                    print("✅ Restored security-scoped access from bookmark for: \(directoryURL.lastPathComponent)")
+                }
+            } catch {
+                print("Failed to restore bookmark for \(directoryURL.path): \(error)")
             }
+        }
+        
+        // Run directory listing on background thread to avoid blocking
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<[URL], Error> in
+            do {
+                let contents = try fileManager.contentsOfDirectory(at: self.directoryURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+                return .success(contents)
+            } catch {
+                print("Error reading directory: \(error)")
+                return .failure(error)
+            }
+        }.value
+        
+        // Handle the result
+        let contents: [URL]
+        switch result {
+        case .success(let files):
+            contents = files
+            print("📁 Directory contents loaded: \(contents.count) items")
+        case .failure(let error):
+            // Handle permission errors
+            let nsError = error as NSError
+            if nsError.domain == NSCocoaErrorDomain && (nsError.code == 256 || nsError.code == 257) {
+                await MainActor.run {
+                    self.promptForDirectoryAccess()
+                }
+            }
+            return []
+        }
+        
+        // Process filtering and deduplication async
+        let processedFiles = await Task.detached(priority: .userInitiated) { [contents] in
+            // Filter for video files
+            let videoFiles = contents.filter { url in
+                self.videoExtensions.contains(url.pathExtension.lowercased())
+            }
+            
+            print("📹 Filtered to \(videoFiles.count) video files")
             
             // Remove duplicates by preferring MP4 versions over originals
             var deduplicatedFiles: [URL] = []
@@ -1813,37 +2074,34 @@ struct VideoListView: View {
             }
             
             return deduplicatedFiles.sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
-        } catch let error as NSError {
-            print("Error reading directory: \(error)")
-            
-            // If it's a permission error, automatically prompt for access
-            if error.domain == NSCocoaErrorDomain && (error.code == 256 || error.code == 257) {
-                DispatchQueue.main.async {
-                    self.promptForDirectoryAccess()
-                }
-            }
-            return []
-        }
+        }.value
+        
+        return processedFiles
     }
     
     private func promptForDirectoryAccess() {
-        let alert = NSAlert()
-        alert.messageText = "Permission Required"
-        alert.informativeText = "VideoViewer needs permission to access '\(directoryURL.lastPathComponent)'. Would you like to grant access?"
-        alert.addButton(withTitle: "Grant Access")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .informational
+        // Show file picker directly - no need for two dialogs
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseDirectories = true
+        openPanel.canChooseFiles = false
+        openPanel.allowsMultipleSelection = false
+        openPanel.message = "Grant access to '\(directoryURL.lastPathComponent)' by selecting it"
+        openPanel.prompt = "Grant Access"
         
-        if alert.runModal() == .alertFirstButtonReturn {
-            let openPanel = NSOpenPanel()
-            openPanel.canChooseDirectories = true
-            openPanel.canChooseFiles = false
-            openPanel.allowsMultipleSelection = false
-            openPanel.message = "Select '\(directoryURL.lastPathComponent)' to grant access"
-            openPanel.prompt = "Grant Access"
-            openPanel.directoryURL = directoryURL.deletingLastPathComponent()
-            
-            if openPanel.runModal() == .OK, let url = openPanel.url {
+        // Try to set the directory to the parent, but handle cases where we might not have access
+        var startingDirectory = directoryURL.deletingLastPathComponent()
+        
+        // If the parent is also not accessible, go up until we find one that is
+        while !FileManager.default.isReadableFile(atPath: startingDirectory.path) && startingDirectory.path != "/" {
+            startingDirectory = startingDirectory.deletingLastPathComponent()
+        }
+        
+        openPanel.directoryURL = startingDirectory
+        
+        // Also set the directory we want them to select as the filename for convenience
+        openPanel.nameFieldStringValue = directoryURL.lastPathComponent
+        
+        if openPanel.runModal() == .OK, let url = openPanel.url {
                 // Save bookmark for persistent access
                 do {
                     let bookmarkData = try url.bookmarkData(
@@ -1853,57 +2111,122 @@ struct VideoListView: View {
                     )
                     UserDefaults.standard.set(bookmarkData, forKey: "bookmark_\(url.path)")
                     
-                    // Refresh the view
-                    loadVideoFiles()
-                    loadThumbnails()
-                    applyFilters()
+                    // Refresh the view and browser
+                    Task {
+                        await initializeVideoList()
+                        // Notify browser to refresh so it shows unlocked directories
+                        NotificationCenter.default.post(name: .refreshBrowser, object: nil)
+                    }
                 } catch {
                     print("Failed to save bookmark: \(error)")
                 }
             }
-        }
     }
     
     private func loadThumbnails() {
+        // Always load thumbnails asynchronously to prevent UI blocking
+        Task {
+            await loadThumbnailsAsync()
+        }
+    }
+    
+    private func thumbnailForVideo(_ videoURL: URL) -> NSImage? {
+        // Return cached thumbnail if available
+        if let thumbnail = thumbnails[videoURL] {
+            return thumbnail
+        }
+        
+        // For large directories, load thumbnail on demand
+        if localVideoFiles.count > 500 {
+            Task {
+                if let thumbnail = await loadSingleThumbnail(for: videoURL) {
+                    await MainActor.run {
+                        self.thumbnails[videoURL] = thumbnail
+                    }
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    @MainActor
+    private func loadThumbnailsAsync() async {
         thumbnails.removeAll()
         
         let videoInfoURL = directoryURL.appendingPathComponent(".video_info")
-        guard FileManager.default.fileExists(atPath: videoInfoURL.path) else { return }
+        
+        // Check if thumbnail directory exists asynchronously to avoid blocking
+        let thumbnailDirExists = await Task.detached(priority: .userInitiated) {
+            FileManager.default.fileExists(atPath: videoInfoURL.path)
+        }.value
+        
+        guard thumbnailDirExists else { 
+            print("No .video_info directory found")
+            return 
+        }
         
         // Check if this is a network drive
         let isNetworkDrive = isNetworkPath(directoryURL)
         
         if isNetworkDrive {
             print("Loading thumbnails from network drive: \(directoryURL.path)")
-            // For network drives, load thumbnails asynchronously to avoid beach ball
-            Task {
-                var cachedCount = 0
-                var networkLoadCount = 0
-                
-                for videoURL in localVideoFiles {
-                    if let thumbnail = await loadSingleThumbnail(for: videoURL) {
-                        await MainActor.run {
-                            self.thumbnails[videoURL] = thumbnail
-                        }
-                        if loadCachedThumbnail(for: videoURL) != nil {
-                            cachedCount += 1
-                        } else {
-                            networkLoadCount += 1
-                        }
+        } else {
+            print("Loading thumbnails from local drive: \(directoryURL.path)")
+        }
+        
+        var cachedCount = 0
+        var loadedCount = 0
+        
+        // Create a local copy to avoid concurrent modification issues
+        let videoFiles = Array(localVideoFiles)
+        
+        // For very large directories, load thumbnails on demand
+        if videoFiles.count > 500 {
+            print("📸 Large directory - loading visible thumbnails only")
+            // Load thumbnails as they become visible in the LazyVGrid
+            // The grid view will request thumbnails as needed
+            return
+        }
+        
+        // Process thumbnails in batches to keep UI responsive
+        let batchSize = isNetworkDrive ? 5 : 20
+        
+        for i in stride(from: 0, to: videoFiles.count, by: batchSize) {
+            let endIndex = min(i + batchSize, videoFiles.count)
+            guard i < endIndex else { continue }
+            let batch = Array(videoFiles[i..<endIndex])
+            
+            await withTaskGroup(of: (URL, Data?).self) { group in
+                for videoURL in batch {
+                    group.addTask {
+                        // Load thumbnail data instead of NSImage to avoid Sendable issues
+                        let thumbnailData = await self.loadSingleThumbnailData(for: videoURL)
+                        return (videoURL, thumbnailData)
                     }
                 }
                 
-                if cachedCount > 0 || networkLoadCount > 0 {
-                    print("Network drive thumbnails - Cached: \(cachedCount), Loaded from network: \(networkLoadCount)")
+                for await (videoURL, thumbnailData) in group {
+                    if let thumbnailData = thumbnailData,
+                       let thumbnail = NSImage(data: thumbnailData) {
+                        self.thumbnails[videoURL] = thumbnail
+                        if self.loadCachedThumbnail(for: videoURL) != nil {
+                            cachedCount += 1
+                        } else {
+                            loadedCount += 1
+                        }
+                    }
                 }
             }
-        } else {
-            // For local drives, load synchronously (fast)
-            for videoURL in localVideoFiles {
-                if let thumbnail = loadSingleThumbnailSync(for: videoURL) {
-                    thumbnails[videoURL] = thumbnail
-                }
+            
+            // Small delay between batches to keep UI responsive
+            if i + batchSize < localVideoFiles.count {
+                try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
             }
+        }
+        
+        if cachedCount > 0 || loadedCount > 0 {
+            print("Thumbnails loaded - Cached: \(cachedCount), Generated: \(loadedCount)")
         }
     }
     
@@ -1912,6 +2235,23 @@ struct VideoListView: View {
             DispatchQueue.global(qos: .userInitiated).async {
                 let thumbnail = self.loadSingleThumbnailSync(for: videoURL)
                 continuation.resume(returning: thumbnail)
+            }
+        }
+    }
+    
+    private func loadSingleThumbnailData(for videoURL: URL) async -> Data? {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let videoInfoURL = self.directoryURL.appendingPathComponent(".video_info")
+                let videoName = videoURL.deletingPathExtension().lastPathComponent.lowercased()
+                let thumbnailURL = videoInfoURL.appendingPathComponent("\(videoName).png")
+                
+                // Try to load thumbnail data
+                if let data = try? Data(contentsOf: thumbnailURL) {
+                    continuation.resume(returning: data)
+                } else {
+                    continuation.resume(returning: nil)
+                }
             }
         }
     }
@@ -2149,9 +2489,9 @@ struct VideoListView: View {
         // No need to clear cache - database is used directly
         
         // Reload all data
-        loadVideoFiles()
-        loadThumbnails()
-        applyFilters()
+        Task {
+            await initializeVideoList()
+        }
         
         // The resolution loading will happen automatically via the existing
         // Database lookup when the view refreshes
@@ -2189,43 +2529,22 @@ struct VideoListView: View {
     }
     
     private func loadVideoMetadata() {
-        print("📊 Loading video metadata for \(directoryURL.lastPathComponent)")
+        // This function is now deprecated - metadata is loaded in loadVideoResolutions()
+        // Only check for missing metadata
+        print("📊 Checking for missing metadata...")
         
-        // First, load cached metadata from database
-        var incompleteMetadataFiles: [URL] = []
-        var loadedCount = 0
-        var incompleteCount = 0
-        
-        // Load metadata from database for each video file
+        var missingCount = 0
         for videoFile in localVideoFiles {
-            if let cachedMetadata = VideoMetadataManager.shared.getCachedMetadata(for: videoFile.path) {
-                let metadata = VideoMetadata(
-                    resolution: cachedMetadata.resolution,
-                    duration: cachedMetadata.duration,
-                    fileSize: cachedMetadata.fileSize
-                )
-                videoMetadata[videoFile] = metadata
-                loadedCount += 1
-                
-                // Check if metadata is incomplete (missing duration or file size)
-                if cachedMetadata.duration == 0 || cachedMetadata.fileSize == 0 {
-                    incompleteMetadataFiles.append(videoFile)
-                    incompleteCount += 1
-                }
+            if videoMetadata[videoFile] == nil {
+                missingCount += 1
             }
         }
         
-        print("📊 Loaded \(loadedCount) cached metadata entries from database")
-        if incompleteCount > 0 {
-            print("📊 Found \(incompleteCount) entries with incomplete metadata (missing duration/size)")
-        }
-        
-        // Debug: Show a sample of what was loaded
-        if let firstVideo = localVideoFiles.first, let metadata = videoMetadata[firstVideo] {
-            print("📊 Sample metadata - File: \(firstVideo.lastPathComponent)")
-            print("   Resolution: \(metadata.resolution)")
-            print("   Duration: \(metadata.duration != nil ? "\(metadata.duration!) seconds (\(ContentView.formatDuration(metadata.duration)))" : "MISSING")")
-            print("   Size: \(metadata.fileSize != nil ? "\(metadata.fileSize!) bytes (\(ContentView.formatFileSize(metadata.fileSize)))" : "MISSING")")
+        if missingCount > 0 {
+            print("📊 Found \(missingCount) files without metadata")
+        } else {
+            print("📊 All metadata already loaded from loadVideoResolutions()")
+            return
         }
         
         // Then load any missing metadata asynchronously
@@ -2245,12 +2564,7 @@ struct VideoListView: View {
                 }
             }
             
-            // Also add files that had incomplete metadata from cache
-            for file in incompleteMetadataFiles {
-                if !missingFiles.contains(file) {
-                    missingFiles.append(file)
-                }
-            }
+            // Note: Incomplete metadata files are now handled in loadVideoResolutions()
             
             if !missingFiles.isEmpty {
                 print("📊 Loading metadata for \(missingFiles.count) files without cached data")

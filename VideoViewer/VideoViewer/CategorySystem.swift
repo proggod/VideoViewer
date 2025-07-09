@@ -31,6 +31,14 @@ class CategoryManager: ObservableObject {
     }
     
     private init() {
+        // Check if database is on network drive
+        let dbPath = SettingsManager.shared.getDatabasePath()
+        if dbPath.path.hasPrefix("/Volumes/") {
+            print("📁 Network database detected for categories, enabling local cache")
+            SettingsManager.shared.useLocalDatabaseCache = true
+            syncFromNetworkToLocal()
+        }
+        
         openDatabase()
         createTables()
         cleanupEmptyCategories()
@@ -44,6 +52,11 @@ class CategoryManager: ObservableObject {
             name: .databaseRestored,
             object: nil
         )
+        
+        // Start background sync if using local cache
+        if SettingsManager.shared.useLocalDatabaseCache {
+            startBackgroundSync()
+        }
     }
     
     @objc private func handleDatabaseRestored() {
@@ -67,11 +80,12 @@ class CategoryManager: ObservableObject {
         )
     }
     
-    deinit {
-        sqlite3_close(db)
-    }
-    
     private func getDatabasePath() -> String {
+        // Check if we should use local cache
+        if SettingsManager.shared.useLocalDatabaseCache {
+            return getLocalCachePath()
+        }
+        
         // Use configurable path from SettingsManager
         let dbPath = SettingsManager.shared.getDatabasePath()
         let dbDir = dbPath.deletingLastPathComponent()
@@ -79,6 +93,18 @@ class CategoryManager: ObservableObject {
         // Create directory if it doesn't exist
         try? FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
         
+        return dbPath.path
+    }
+    
+    private func getLocalCachePath() -> String {
+        let tempDir = FileManager.default.temporaryDirectory
+        let cacheDir = tempDir.appendingPathComponent("VideoViewer_Cache")
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        return cacheDir.appendingPathComponent("categories.db").path
+    }
+    
+    private func getNetworkDatabasePath() -> String {
+        let dbPath = SettingsManager.shared.getDatabasePath()
         return dbPath.path
     }
     
@@ -623,6 +649,80 @@ class CategoryManager: ObservableObject {
         }
         
         return (true, nil)
+    }
+    
+    // MARK: - Database Sync
+    
+    private var syncTimer: Timer?
+    
+    private func syncFromNetworkToLocal() {
+        let networkPath = getNetworkDatabasePath()
+        let localPath = getLocalCachePath()
+        
+        // Check if network database exists
+        guard FileManager.default.fileExists(atPath: networkPath) else {
+            print("📁 No network category database to sync from")
+            return
+        }
+        
+        print("🔄 Syncing category database from network to local cache...")
+        print("  From: \(networkPath)")
+        print("  To: \(localPath)")
+        
+        do {
+            // Remove old local cache if exists
+            if FileManager.default.fileExists(atPath: localPath) {
+                try FileManager.default.removeItem(atPath: localPath)
+            }
+            
+            // Copy network database to local
+            try FileManager.default.copyItem(atPath: networkPath, toPath: localPath)
+            print("✅ Category database synced to local cache")
+        } catch {
+            print("❌ Failed to sync category database: \(error)")
+        }
+    }
+    
+    private func syncFromLocalToNetwork() {
+        guard SettingsManager.shared.useLocalDatabaseCache else { return }
+        
+        let networkPath = getNetworkDatabasePath()
+        let localPath = getLocalCachePath()
+        
+        // Only sync if local database exists
+        guard FileManager.default.fileExists(atPath: localPath) else { return }
+        
+        do {
+            // Create backup of network database
+            let backupPath = networkPath + ".backup"
+            if FileManager.default.fileExists(atPath: networkPath) {
+                try? FileManager.default.removeItem(atPath: backupPath)
+                try FileManager.default.copyItem(atPath: networkPath, toPath: backupPath)
+            }
+            
+            // Copy local database to network
+            try FileManager.default.removeItem(atPath: networkPath)
+            try FileManager.default.copyItem(atPath: localPath, toPath: networkPath)
+            print("✅ Synced local category changes to network database")
+        } catch {
+            print("❌ Failed to sync categories to network: \(error)")
+        }
+    }
+    
+    private func startBackgroundSync() {
+        // Sync every 30 seconds
+        syncTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in
+            self.syncFromLocalToNetwork()
+        }
+    }
+    
+    deinit {
+        syncTimer?.invalidate()
+        // Final sync before closing
+        if SettingsManager.shared.useLocalDatabaseCache {
+            syncFromLocalToNetwork()
+        }
+        sqlite3_close(db)
     }
 }
 

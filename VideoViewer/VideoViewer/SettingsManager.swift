@@ -6,6 +6,7 @@ class SettingsManager: ObservableObject {
     
     @Published var databaseDirectory: URL?
     @Published var isFirstRun: Bool = true
+    @Published var useLocalDatabaseCache: Bool = false
     
     private let userDefaults = UserDefaults.standard
     private let databaseDirectoryKey = "customDatabaseDirectory"

@@ -70,9 +70,33 @@ class CleanupManager: ObservableObject {
             print("Error creating cleanup_rules table")
         }
         
-        // Add sort_order column if it doesn't exist (for existing databases)
-        let addSortOrderColumn = "ALTER TABLE cleanup_rules ADD COLUMN sort_order INTEGER DEFAULT 0"
-        sqlite3_exec(db, addSortOrderColumn, nil, nil, nil)
+        // Check if sort_order column exists before trying to add it
+        var columnExists = false
+        let checkColumnQuery = "PRAGMA table_info(cleanup_rules)"
+        var checkStmt: OpaquePointer?
+        
+        if sqlite3_prepare_v2(db, checkColumnQuery, -1, &checkStmt, nil) == SQLITE_OK {
+            while sqlite3_step(checkStmt) == SQLITE_ROW {
+                if let columnName = sqlite3_column_text(checkStmt, 1) {
+                    let name = String(cString: columnName)
+                    if name == "sort_order" {
+                        columnExists = true
+                        break
+                    }
+                }
+            }
+        }
+        sqlite3_finalize(checkStmt)
+        
+        // Add sort_order column only if it doesn't exist
+        if !columnExists {
+            let addSortOrderColumn = "ALTER TABLE cleanup_rules ADD COLUMN sort_order INTEGER DEFAULT 0"
+            if sqlite3_exec(db, addSortOrderColumn, nil, nil, nil) != SQLITE_OK {
+                print("Error adding sort_order column")
+            } else {
+                print("Successfully added sort_order column to cleanup_rules table")
+            }
+        }
         
         // Update existing rules to have sequential sort_order
         let updateSortOrder = """
