@@ -94,24 +94,27 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Tab bar
-            HStack(spacing: 20) {
-                Button(action: { currentTab = .videos }) {
-                    Label("Videos", systemImage: "play.rectangle")
-                        .foregroundColor(currentTab == .videos ? .accentColor : .secondary)
+            HStack(spacing: 16) {
+                // Tab buttons
+                HStack(spacing: 20) {
+                    Button(action: { currentTab = .videos }) {
+                        Label("Videos", systemImage: "play.rectangle")
+                            .foregroundColor(currentTab == .videos ? .accentColor : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Button(action: { currentTab = .categories }) {
+                        Label("Categories", systemImage: "tag")
+                            .foregroundColor(currentTab == .categories ? .accentColor : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Button(action: { currentTab = .cleanup }) {
+                        Label("Cleanup", systemImage: "wand.and.stars")
+                            .foregroundColor(currentTab == .cleanup ? .accentColor : .secondary)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-                
-                Button(action: { currentTab = .categories }) {
-                    Label("Categories", systemImage: "tag")
-                        .foregroundColor(currentTab == .categories ? .accentColor : .secondary)
-                }
-                .buttonStyle(.plain)
-                
-                Button(action: { currentTab = .cleanup }) {
-                    Label("Cleanup", systemImage: "wand.and.stars")
-                        .foregroundColor(currentTab == .cleanup ? .accentColor : .secondary)
-                }
-                .buttonStyle(.plain)
                 
                 Spacer()
             }
@@ -1115,6 +1118,7 @@ struct VideoListView: View {
     @State private var videoMetadata: [URL: VideoMetadata] = [:]
     @State private var unsupportedFiles: Set<URL> = []
     @StateObject private var categoryManager = CategoryManager.shared
+    @State private var searchText: String = ""
     @State private var showingDeleteAlert = false
     @State private var videoToDelete: URL?
     @State private var showingCleanupPreview = false
@@ -1148,222 +1152,229 @@ struct VideoListView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header with title and view toggle
-            HStack {
-                // Left side - title and indicators
-                HStack {
-                    Text(getDisplayName(for: directoryURL))
-                        .font(.title2)
-                    
-                    // Add folder access button for permission issues
-                    Button(action: {
-                        let panel = NSOpenPanel()
-                        panel.canChooseFiles = false
-                        panel.canChooseDirectories = true
-                        panel.allowsMultipleSelection = false
-                        panel.message = "Grant access to a folder"
+            // Top bar with all controls
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    // Directory name and network indicator
+                    HStack(spacing: 8) {
+                        Text(getDisplayName(for: directoryURL))
+                            .font(.headline)
                         
-                        if panel.runModal() == .OK {
-                            if let url = panel.url {
-                                // Save bookmark for persistent access
-                                saveBookmark(for: url)
-                            }
-                        }
-                    }) {
-                        Image(systemName: "folder.badge.plus")
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                    }
-                    .buttonStyle(.plain)
-                    .tooltip("Grant access to protected folders")
-                    
-                    // Network drive indicator
-                    if isNetworkPath(directoryURL) {
-                        HStack(spacing: 4) {
+                        if isNetworkPath(directoryURL) {
                             Image(systemName: "network")
                                 .font(.caption)
                                 .foregroundColor(.blue)
-                            Text("Network Drive")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                                .tooltip("Network drive")
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.blue.opacity(0.1))
-                        .cornerRadius(6)
-                        .tooltip("Network drive - Performance may be slower")
                     }
                     
-                    // Unsupported files indicator
-                    if !unsupportedFiles.isEmpty {
+                    Divider()
+                        .frame(height: 20)
+                    
+                    // Search field
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.secondary)
+                        TextField("Search videos...", text: $searchText)
+                            .textFieldStyle(.plain)
+                            .onChange(of: searchText) { _, _ in
+                                applyFilters()
+                            }
+                        if !searchText.isEmpty {
+                            Button(action: {
+                                searchText = ""
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.gray.opacity(0.1))
+                    .cornerRadius(6)
+                    .frame(width: 200)
+                    
+                    Spacer()
+                    
+                    // Thumbnail slider (only in grid view)
+                    if isGridView {
                         HStack(spacing: 4) {
-                            Image(systemName: "xmark.circle")
-                                .font(.caption)
-                                .foregroundColor(.red)
-                            Text("\(unsupportedFiles.count) Unsupported")
+                            Image(systemName: "photo.fill")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+                            
+                            Slider(value: $thumbnailSize, in: 100...480, step: 10)
+                                .frame(width: 120)
+                                .onChange(of: thumbnailSize) { _, newValue in
+                                    UserDefaults.standard.set(newValue, forKey: "thumbnailSize")
+                                }
+                            
+                            Text("\(Int(thumbnailSize))px")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 40)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.red.opacity(0.1))
-                        .cornerRadius(6)
-                        .tooltip("\(unsupportedFiles.count) files with unsupported codecs")
                     }
                     
-                    // Selection indicator
-                    if !selectedVideos.isEmpty {
-                        HStack(spacing: 4) {
-                            Image(systemName: "checkmark.circle")
-                                .font(.caption)
-                                .foregroundColor(.blue)
-                            Text("\(selectedVideos.count) Selected")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.blue.opacity(0.1))
-                        .cornerRadius(6)
-                        .tooltip("\(selectedVideos.count) videos selected")
-                    }
-                }
-                
-                Spacer()
-                
-                // Right side - action buttons
-                HStack {
-                    // Clear selection button (when videos are selected)
-                    if !selectedVideos.isEmpty {
-                        Button(action: {
-                            selectedVideos.removeAll()
-                            lastSelectedVideo = nil
+                    // Control buttons
+                    HStack(spacing: 8) {
+                        // View toggle
+                        Button(action: { 
+                            isGridView.toggle()
+                            UserDefaults.standard.set(isGridView, forKey: "isGridView")
                         }) {
-                            Image(systemName: "xmark.circle")
+                            Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2")
                                 .font(.title3)
                         }
                         .buttonStyle(.plain)
-                        .tooltip("Clear Selection")
-                    }
-                    
-                    // Refresh button
-                    Button(action: { 
-                        refreshDirectory()
-                    }) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.title3)
-                    }
-                    .buttonStyle(.plain)
-                    .tooltip("Refresh Directory - Rescan for new files")
-                    
-                    // Cleanup button
-                    Button(action: { 
-                        showingCleanupPreview = true
-                    }) {
-                        Image(systemName: "wand.and.stars")
-                            .font(.title3)
-                    }
-                    .buttonStyle(.plain)
-                    .tooltip("Cleanup Filenames - Batch rename with rules")
-                    
-                    // Screenshot generation button
-                    Button(action: {
-                        generateScreenshots()
-                    }) {
-                        Image(systemName: "photo")
-                            .font(.title3)
-                            .foregroundColor(isGeneratingScreenshots ? .secondary : .primary)
-                    }
-                    .buttonStyle(.plain)
-                    .tooltip("Generate Screenshots - Create missing thumbnails")
-                    .disabled(isGeneratingScreenshots)
-                    
-                    // MKV conversion button
-                    Button(action: {
-                        prepareVideoConversion()
-                    }) {
-                        Image(systemName: "film.stack")
-                            .font(.title3)
-                    }
-                    .buttonStyle(.plain)
-                    .tooltip("Convert MKV Files - Convert to MP4")
-                    
-                    // Sort menu
-                    Menu {
-                        ForEach(SortOrder.allCases, id: \.self) { order in
-                            Button(action: {
-                                if sortOrder == order {
-                                    sortAscending.toggle()
-                                } else {
-                                    sortOrder = order
-                                    sortAscending = true
-                                }
-                                applyFilters()
-                            }) {
-                                HStack {
-                                    Text(order.rawValue)
+                        .tooltip(isGridView ? "Switch to List View" : "Switch to Grid View")
+                        
+                        // Filter toggle
+                        Button(action: { 
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showFilters.toggle()
+                            }
+                        }) {
+                            Image(systemName: "line.horizontal.3.decrease.circle")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.plain)
+                        .tooltip(showFilters ? "Hide Filters" : "Show Filters")
+                        
+                        // Sort menu
+                        Menu {
+                            ForEach(SortOrder.allCases, id: \.self) { order in
+                                Button(action: {
                                     if sortOrder == order {
-                                        Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
+                                        sortAscending.toggle()
+                                    } else {
+                                        sortOrder = order
+                                        sortAscending = true
+                                    }
+                                    applyFilters()
+                                }) {
+                                    HStack {
+                                        Text(order.rawValue)
+                                        if sortOrder == order {
+                                            Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
+                                        }
                                     }
                                 }
                             }
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .font(.title3)
                         }
-                    } label: {
-                        Image(systemName: "arrow.up.arrow.down")
-                            .font(.title3)
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .tooltip("Sort by: \(sortOrder.rawValue)")
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .tooltip("Sort by: \(sortOrder.rawValue)")
-                    
-                    // Filter toggle button
-                    Button(action: { 
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showFilters.toggle()
-                        }
-                    }) {
-                        Image(systemName: "line.horizontal.3.decrease.circle")
-                            .font(.title3)
-                    }
-                    .buttonStyle(.plain)
-                    .tooltip(showFilters ? "Hide Filters" : "Show Filters")
-                    
-                    // View toggle button
-                    Button(action: { 
-                        isGridView.toggle()
-                        UserDefaults.standard.set(isGridView, forKey: "isGridView")
-                    }) {
-                        Image(systemName: isGridView ? "list.bullet" : "square.grid.2x2")
-                            .font(.title3)
-                    }
-                    .buttonStyle(.plain)
-                    .tooltip(isGridView ? "Switch to List View" : "Switch to Grid View")
-                }
-            }
-            .padding()
-            
-            // Thumbnail size slider (only in grid view)
-            if isGridView && !localVideoFiles.isEmpty {
-                HStack {
-                    Image(systemName: "photo.fill")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    
-                    Slider(value: $thumbnailSize, in: 100...480, step: 10) {
-                        Text("Thumbnail Size")
-                    }
-                    .frame(width: 200)
-                    .onChange(of: thumbnailSize) { _, newValue in
-                        UserDefaults.standard.set(newValue, forKey: "thumbnailSize")
-                    }
-                    
-                    Text("\(Int(thumbnailSize))px")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .frame(width: 50)
                 }
                 .padding(.horizontal)
-                .padding(.bottom, 8)
+                .padding(.vertical, 8)
+                
+                // Status bar with counts and action buttons
+                HStack {
+                    // File counts and status
+                    HStack(spacing: 12) {
+                        Text("\(filteredVideoFiles.count) of \(localVideoFiles.count) videos")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        if !selectedVideos.isEmpty {
+                            Text("• \(selectedVideos.count) selected")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        if !unsupportedFiles.isEmpty {
+                            Text("• \(unsupportedFiles.count) unsupported")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    // Action buttons
+                    HStack(spacing: 8) {
+                        // Clear selection
+                        if !selectedVideos.isEmpty {
+                            Button(action: {
+                                selectedVideos.removeAll()
+                                lastSelectedVideo = nil
+                            }) {
+                                Image(systemName: "xmark.circle")
+                                    .font(.title3)
+                            }
+                            .buttonStyle(.plain)
+                            .tooltip("Clear Selection")
+                        }
+                        
+                        // Refresh
+                        Button(action: { refreshDirectory() }) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.plain)
+                        .tooltip("Refresh Directory")
+                        
+                        // Cleanup
+                        Button(action: { showingCleanupPreview = true }) {
+                            Image(systemName: "wand.and.stars")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.plain)
+                        .tooltip("Cleanup Filenames")
+                        
+                        // Screenshots
+                        Button(action: { generateScreenshots() }) {
+                            Image(systemName: "photo")
+                                .font(.title3)
+                                .foregroundColor(isGeneratingScreenshots ? .secondary : .primary)
+                        }
+                        .buttonStyle(.plain)
+                        .tooltip("Generate Screenshots")
+                        .disabled(isGeneratingScreenshots)
+                        
+                        // Convert MKV
+                        Button(action: { prepareVideoConversion() }) {
+                            Image(systemName: "film.stack")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.plain)
+                        .tooltip("Convert MKV Files")
+                        
+                        // Folder access
+                        Button(action: {
+                            let panel = NSOpenPanel()
+                            panel.canChooseFiles = false
+                            panel.canChooseDirectories = true
+                            panel.allowsMultipleSelection = false
+                            panel.message = "Grant access to a folder"
+                            
+                            if panel.runModal() == .OK {
+                                if let url = panel.url {
+                                    saveBookmark(for: url)
+                                }
+                            }
+                        }) {
+                            Image(systemName: "folder.badge.plus")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.plain)
+                        .tooltip("Grant access to protected folders")
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+                
+                Divider()
             }
+            .background(Color.gray.opacity(0.05))
+                    
             
             if filteredVideoFiles.isEmpty {
                 Spacer()
@@ -1730,6 +1741,13 @@ struct VideoListView: View {
                     return selectedResolutions.contains(resolution)
                 }
                 return false
+            }
+        }
+        
+        // Filter by search text
+        if !searchText.isEmpty {
+            filtered = filtered.filter { videoURL in
+                videoURL.lastPathComponent.localizedCaseInsensitiveContains(searchText)
             }
         }
         

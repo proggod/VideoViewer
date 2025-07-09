@@ -6,7 +6,7 @@ struct VideoViewerApp: App {
     @StateObject private var settingsManager = SettingsManager.shared
     @State private var showingSettings = false
     @State private var hasShownFirstRun = false
-    @State private var showStartupProgress = false
+    @State private var showStartupProgress = true
     @State private var startupComplete = false
     
     var body: some Scene {
@@ -31,10 +31,8 @@ struct VideoViewerApp: App {
                 SettingsView()
             }
             .onAppear {
-                // Show startup progress on first run or if explicitly enabled
-                let shouldShowProgress = settingsManager.isFirstRun || 
-                    UserDefaults.standard.bool(forKey: "showStartupProgress")
-                if shouldShowProgress && !startupComplete {
+                // Always show startup progress
+                if !startupComplete {
                     showStartupProgress = true
                 }
             }
