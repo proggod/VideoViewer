@@ -832,19 +832,14 @@ struct FilterSidebar: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("videoMetadataLoaded"))) { _ in
             updateAvailableResolutions()
         }
-        .onChange(of: videoMetadata) { oldValue, newValue in
-            updateAvailableResolutions()
-        }
     }
     
     private func updateAvailableResolutions() {
         // Get unique resolutions from the video metadata that's already loaded
         let resolutions = Set(videoMetadata.values.compactMap { $0.resolution })
-        print("📊 updateAvailableResolutions: Found \(videoMetadata.count) metadata entries with \(resolutions.count) unique resolutions")
         // Only update if changed to prevent excessive updates
         if availableResolutions != resolutions {
             availableResolutions = resolutions
-            print("📊 Updated available resolutions: \(resolutions.sorted())")
         }
     }
     
@@ -3033,6 +3028,206 @@ struct VideoGridItem: View {
     }
 }
 
+// Separate view for category selection to avoid constraint update loops
+struct CategorySelectionView: View {
+    let videoPath: String
+    @Binding var selectedCategories: Set<Int>
+    let categoryManager: CategoryManager
+    
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Categories")
+                    .font(.headline)
+                    .foregroundColor(.white)
+                    .padding(.bottom, 2)
+                
+                // Use FlowLayout for all groups and categories
+                FlowLayout(spacing: 12) {
+                    // Show ungrouped categories first
+                    let ungroupedCategories = categoryManager.getUngroupedCategories()
+                    if !ungroupedCategories.isEmpty {
+                        CategoryGroupView(
+                            title: "Ungrouped",
+                            categories: ungroupedCategories,
+                            selectedCategories: selectedCategories,
+                            toggleAction: toggleCategory
+                        )
+                    }
+                    
+                    // Show grouped categories
+                    ForEach(categoryManager.categoryGroups) { group in
+                        let groupCategories = categoryManager.getCategoriesInGroup(groupId: group.id)
+                        if !groupCategories.isEmpty {
+                            CategoryGroupView(
+                                title: group.name,
+                                categories: groupCategories,
+                                selectedCategories: selectedCategories,
+                                toggleAction: toggleCategory,
+                                icon: group.allowMultiple ? "folder.badge.plus" : "folder.badge.minus",
+                                iconColor: group.allowMultiple ? .blue : .orange,
+                                subtitle: group.allowMultiple ? "(Multi)" : "(Single)"
+                            )
+                        }
+                    }
+                }
+            }
+            .padding()
+        }
+    }
+    
+    private func toggleCategory(_ category: CategoryManager.Category) {
+        let isSelected = !selectedCategories.contains(category.id)
+        
+        print("🔄 Toggling category '\(category.name)' to \(isSelected)")
+        
+        // Enforce group selection rules
+        let updatedCategories = categoryManager.enforceGroupSelectionRules(
+            for: videoPath,
+            selectedCategoryId: category.id,
+            isSelected: isSelected
+        )
+        
+        // Update the binding
+        selectedCategories = updatedCategories
+        
+        // Apply changes to database
+        categoryManager.applyCategoriesToVideo(
+            videoPath: videoPath,
+            categories: updatedCategories
+        )
+        
+        // Notify views
+        NotificationCenter.default.post(
+            name: Notification.Name("categoriesUpdated"),
+            object: nil
+        )
+    }
+}
+
+// Group view that contains categories
+struct CategoryGroupView: View {
+    let title: String
+    let categories: [CategoryManager.Category]
+    let selectedCategories: Set<Int>
+    let toggleAction: (CategoryManager.Category) -> Void
+    var icon: String? = nil
+    var iconColor: Color? = nil
+    var subtitle: String? = nil
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            // Group header
+            HStack(spacing: 4) {
+                if let icon = icon, let iconColor = iconColor {
+                    Image(systemName: icon)
+                        .foregroundColor(iconColor)
+                        .font(.caption)
+                }
+                
+                Text(title)
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.8))
+                
+                if let subtitle = subtitle {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundColor(.white.opacity(0.6))
+                        .italic()
+                }
+            }
+            
+            // Categories in this group
+            FlowLayout(spacing: 6) {
+                ForEach(categories) { category in
+                    CategoryToggleItem(
+                        category: category,
+                        isSelected: selectedCategories.contains(category.id),
+                        action: {
+                            toggleAction(category)
+                        }
+                    )
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.white.opacity(0.05))
+        .cornerRadius(8)
+    }
+}
+
+// Simple toggle item without complex bindings
+struct CategoryToggleItem: View {
+    let category: CategoryManager.Category
+    let isSelected: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .foregroundColor(.white)
+                    .font(.system(size: 14))
+                
+                Text(category.name)
+                    .foregroundColor(.white)
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(isSelected ? Color.white.opacity(0.2) : Color.clear)
+            .cornerRadius(4)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// Simple flow layout to replace LazyVGrid
+struct FlowLayout: Layout {
+    let spacing: CGFloat
+    
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = layout(proposal: proposal, subviews: subviews)
+        return result.size
+    }
+    
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = layout(proposal: proposal, subviews: subviews)
+        for (index, subview) in subviews.enumerated() {
+            subview.place(at: CGPoint(x: bounds.minX + result.positions[index].x,
+                                    y: bounds.minY + result.positions[index].y),
+                         proposal: .unspecified)
+        }
+    }
+    
+    private func layout(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, positions: [CGPoint]) {
+        var positions: [CGPoint] = []
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var maxX: CGFloat = 0
+        
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            
+            if currentX + size.width > (proposal.width ?? .infinity) && currentX > 0 {
+                currentX = 0
+                currentY += lineHeight + spacing
+                lineHeight = 0
+            }
+            
+            positions.append(CGPoint(x: currentX, y: currentY))
+            lineHeight = max(lineHeight, size.height)
+            currentX += size.width + spacing
+            maxX = max(maxX, currentX - spacing)
+        }
+        
+        return (CGSize(width: maxX, height: currentY + lineHeight), positions)
+    }
+}
+
 // Window controller to properly manage window lifecycle
 class VideoWindowController: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
@@ -3238,6 +3433,7 @@ struct VideoPlayerContent: View {
     @State private var selectedCategories: Set<Int> = []
     @State private var showCategories: Bool = false
     @State private var isPlayerReady: Bool = false
+    @State private var isUpdatingCategories: Bool = false
     
     init(videoURL: URL) {
         self.videoURL = videoURL
@@ -3276,8 +3472,10 @@ struct VideoPlayerContent: View {
                     .onAppear {
                         player.play()
                         
-                        // Load categories for this video
-                        selectedCategories = categoryManager.getCategoriesForVideo(videoPath: videoURL.path)
+                        // Load categories for this video after a delay to avoid constraint issues
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            selectedCategories = categoryManager.getCategoriesForVideo(videoPath: videoURL.path)
+                        }
                         
                         // Start a timer to periodically check volume and mute state
                         activeTimerCount += 1
@@ -3312,70 +3510,11 @@ struct VideoPlayerContent: View {
             VStack(spacing: 0) {
                 // Category checkboxes
                 if !categoryManager.categories.isEmpty && showCategories {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Categories")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .padding(.bottom, 2)
-                            
-                            // Create a flow layout for all groups and ungrouped categories
-                            LazyVGrid(columns: [
-                                GridItem(.adaptive(minimum: 250, maximum: 350), spacing: 8)
-                            ], alignment: .leading, spacing: 6) {
-                                
-                                // Show ungrouped categories first
-                                let ungroupedCategories = categoryManager.getUngroupedCategories()
-                                if !ungroupedCategories.isEmpty {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text("Ungrouped")
-                                            .font(.subheadline)
-                                            .foregroundColor(.white.opacity(0.8))
-                                        
-                                        LazyVGrid(columns: [
-                                            GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 6)
-                                        ], spacing: 3) {
-                                            ForEach(ungroupedCategories) { category in
-                                                categoryVideoToggle(category: category)
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                // Show grouped categories
-                                ForEach(categoryManager.categoryGroups) { group in
-                                    let groupCategories = categoryManager.getCategoriesInGroup(groupId: group.id)
-                                    if !groupCategories.isEmpty {
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: group.allowMultiple ? "folder.badge.plus" : "folder.badge.minus")
-                                                    .foregroundColor(group.allowMultiple ? .blue : .orange)
-                                                    .font(.caption)
-                                                
-                                                Text(group.name)
-                                                    .font(.subheadline)
-                                                    .foregroundColor(.white.opacity(0.8))
-                                                
-                                                Text(group.allowMultiple ? "(Multi)" : "(Single)")
-                                                    .font(.caption2)
-                                                    .foregroundColor(.white.opacity(0.6))
-                                                    .italic()
-                                            }
-                                            
-                                            LazyVGrid(columns: [
-                                                GridItem(.adaptive(minimum: 100, maximum: 150), spacing: 6)
-                                            ], spacing: 3) {
-                                                ForEach(groupCategories) { category in
-                                                    categoryVideoToggle(category: category)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        .padding()
-                    }
+                    CategorySelectionView(
+                        videoPath: videoURL.path,
+                        selectedCategories: $selectedCategories,
+                        categoryManager: categoryManager
+                    )
                     .frame(maxHeight: 200)
                     .background(Color.black.opacity(0.6))
                 }
@@ -3385,8 +3524,10 @@ struct VideoPlayerContent: View {
                     // Categories toggle button
                     if !categoryManager.categories.isEmpty {
                         Button(action: {
+                            print("🏷️ Categories button clicked, current state: \(showCategories)")
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 showCategories.toggle()
+                                print("🏷️ Categories now: \(showCategories)")
                             }
                         }) {
                             Image(systemName: showCategories ? "tag.fill" : "tag")
@@ -3636,39 +3777,4 @@ struct VideoPlayerContent: View {
         return cacheDir.appendingPathComponent("\(safeHash).png")
     }
     
-    private func categoryVideoToggle(category: CategoryManager.Category) -> some View {
-        Toggle(isOn: Binding(
-            get: { selectedCategories.contains(category.id) },
-            set: { isSelected in
-                // Enforce group selection rules
-                let updatedCategories = categoryManager.enforceGroupSelectionRules(
-                    for: videoURL.path,
-                    selectedCategoryId: category.id,
-                    isSelected: isSelected
-                )
-                
-                // Update the local state to reflect the actual categories
-                selectedCategories = updatedCategories
-                
-                // Set the main category that was toggled
-                categoryManager.setVideoCategory(
-                    videoPath: videoURL.path,
-                    categoryId: category.id,
-                    isSelected: isSelected
-                )
-                
-                // Notify views to update checkmarks
-                NotificationCenter.default.post(
-                    name: Notification.Name("categoriesUpdated"),
-                    object: nil
-                )
-            }
-        )) {
-            Text(category.name)
-                .foregroundColor(.white)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        }
-        .toggleStyle(CheckboxToggleStyle())
-    }
 }

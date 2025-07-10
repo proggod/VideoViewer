@@ -47,6 +47,7 @@ class CategoryManager: ObservableObject {
         cleanupEmptyCategories()
         loadCategoryGroups()
         loadCategories()
+        loadAllVideoCategoryMappings()
         
         // Listen for database restore notifications
         NotificationCenter.default.addObserver(
@@ -75,6 +76,7 @@ class CategoryManager: ObservableObject {
         // Reload all data
         loadCategoryGroups()
         loadCategories()
+        loadAllVideoCategoryMappings()
         
         // Post update notification
         NotificationCenter.default.post(
@@ -339,33 +341,44 @@ class CategoryManager: ObservableObject {
     
     // MARK: - Video Category Management
     
-    func getCategoriesForVideo(videoPath: String) -> Set<Int> {
-        // Check cache first
-        if let cached = videoCategoryCache[videoPath] {
-            return cached
-        }
+    private func loadAllVideoCategoryMappings() {
+        print("📚 Loading all video-category mappings into memory...")
+        let startTime = Date()
         
-        var categoryIds = Set<Int>()
-        
-        let queryString = "SELECT category_id FROM video_categories WHERE video_path = ?"
+        let queryString = "SELECT video_path, category_id FROM video_categories"
         var statement: OpaquePointer?
         
+        videoCategoryCache.removeAll()
+        var count = 0
+        
         if sqlite3_prepare_v2(db, queryString, -1, &statement, nil) == SQLITE_OK {
-            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-            sqlite3_bind_text(statement, 1, videoPath, -1, SQLITE_TRANSIENT)
-            
             while sqlite3_step(statement) == SQLITE_ROW {
-                let categoryId = Int(sqlite3_column_int(statement, 0))
-                categoryIds.insert(categoryId)
+                if let pathCStr = sqlite3_column_text(statement, 0) {
+                    let videoPath = String(cString: pathCStr)
+                    let categoryId = Int(sqlite3_column_int(statement, 1))
+                    
+                    if videoCategoryCache[videoPath] != nil {
+                        videoCategoryCache[videoPath]!.insert(categoryId)
+                    } else {
+                        videoCategoryCache[videoPath] = [categoryId]
+                    }
+                    count += 1
+                }
             }
         }
         
         sqlite3_finalize(statement)
         
-        // Cache the result
-        videoCategoryCache[videoPath] = categoryIds
-        
-        return categoryIds
+        let elapsed = Date().timeIntervalSince(startTime)
+        print("✅ Loaded \(count) video-category mappings for \(videoCategoryCache.count) videos in \(String(format: "%.2f", elapsed))s")
+    }
+    
+    // No longer needed - everything is loaded at startup
+    // func preloadCategoriesForVideos(videoPaths: [String]) { }
+    
+    func getCategoriesForVideo(videoPath: String) -> Set<Int> {
+        // Everything is already loaded in memory
+        return videoCategoryCache[videoPath] ?? []
     }
     
     func setVideoCategory(videoPath: String, categoryId: Int, isSelected: Bool) {
@@ -413,21 +426,15 @@ class CategoryManager: ObservableObject {
     }
     
     func getVideosForCategory(categoryId: Int) -> [String] {
+        // Everything is already loaded in memory
         var videoPaths: [String] = []
         
-        let queryString = "SELECT video_path FROM video_categories WHERE category_id = ?"
-        var statement: OpaquePointer?
-        
-        if sqlite3_prepare_v2(db, queryString, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_int(statement, 1, Int32(categoryId))
-            
-            while sqlite3_step(statement) == SQLITE_ROW {
-                let videoPath = String(cString: sqlite3_column_text(statement, 0))
+        for (videoPath, categories) in videoCategoryCache {
+            if categories.contains(categoryId) {
                 videoPaths.append(videoPath)
             }
         }
         
-        sqlite3_finalize(statement)
         return videoPaths
     }
     
@@ -617,8 +624,7 @@ class CategoryManager: ObservableObject {
                 for categoryId in categoriesInSameGroup {
                     if categoryId != selectedCategoryId && currentCategories.contains(categoryId) {
                         currentCategories.remove(categoryId)
-                        // Remove from database
-                        setVideoCategory(videoPath: videoPath, categoryId: categoryId, isSelected: false)
+                        // Don't call setVideoCategory here - let the caller handle all updates
                     }
                 }
             }
@@ -628,6 +634,25 @@ class CategoryManager: ObservableObject {
         }
         
         return currentCategories
+    }
+    
+    func applyCategoriesToVideo(videoPath: String, categories: Set<Int>) {
+        // Get current categories
+        let currentCategories = getCategoriesForVideo(videoPath: videoPath)
+        
+        // Remove categories that are no longer selected
+        for categoryId in currentCategories {
+            if !categories.contains(categoryId) {
+                setVideoCategory(videoPath: videoPath, categoryId: categoryId, isSelected: false)
+            }
+        }
+        
+        // Add new categories
+        for categoryId in categories {
+            if !currentCategories.contains(categoryId) {
+                setVideoCategory(videoPath: videoPath, categoryId: categoryId, isSelected: true)
+            }
+        }
     }
     
     func validateCategorySelection(for videoPath: String, categoryId: Int, isSelected: Bool) -> (allowed: Bool, reason: String?) {

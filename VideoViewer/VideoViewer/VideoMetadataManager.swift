@@ -7,6 +7,7 @@ class VideoMetadataManager: ObservableObject {
     private var db: OpaquePointer?
     private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     private let dbQueue = DispatchQueue(label: "com.videoviewer.dbqueue", qos: .userInitiated)
+    private var metadataCache: [String: CachedMetadata] = [:]
     
     struct CachedMetadata {
         let path: String
@@ -36,6 +37,9 @@ class VideoMetadataManager: ObservableObject {
         
         // Clean up any corrupted resolution strings
         cleanupCorruptedResolutions()
+        
+        // Load all metadata into memory
+        loadAllMetadataIntoMemory()
         
         // Listen for database restore notifications
         NotificationCenter.default.addObserver(
@@ -146,6 +150,9 @@ class VideoMetadataManager: ObservableObject {
         db = nil
         openDatabase()
         createTables()
+        
+        // Reload all metadata into memory
+        loadAllMetadataIntoMemory()
     }
     
     
@@ -260,6 +267,46 @@ class VideoMetadataManager: ObservableObject {
         }
     }
     
+    private func loadAllMetadataIntoMemory() {
+        print("📚 Loading all video metadata into memory...")
+        let startTime = Date()
+        
+        let query = "SELECT path, resolution, duration, file_size, last_modified, last_scanned FROM video_metadata"
+        var statement: OpaquePointer?
+        
+        metadataCache.removeAll()
+        var count = 0
+        
+        if sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let pathCStr = sqlite3_column_text(statement, 0),
+                   let resCStr = sqlite3_column_text(statement, 1) {
+                    let path = String(cString: pathCStr)
+                    let resolution = String(cString: resCStr)
+                    let duration = sqlite3_column_double(statement, 2)
+                    let fileSize = sqlite3_column_int64(statement, 3)
+                    let lastModified = Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
+                    let lastScanned = Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
+                    
+                    metadataCache[path] = CachedMetadata(
+                        path: path,
+                        resolution: resolution,
+                        duration: duration,
+                        fileSize: fileSize,
+                        lastModified: lastModified,
+                        lastScanned: lastScanned
+                    )
+                    count += 1
+                }
+            }
+        }
+        
+        sqlite3_finalize(statement)
+        
+        let elapsed = Date().timeIntervalSince(startTime)
+        print("✅ Loaded \(count) video metadata entries in \(String(format: "%.2f", elapsed))s")
+    }
+    
     private func createTables() {
         let createVideoMetadataTable = """
             CREATE TABLE IF NOT EXISTS video_metadata (
@@ -299,92 +346,28 @@ class VideoMetadataManager: ObservableObject {
     }
     
     func getUniqueResolutions(for directoryPath: String) -> [String] {
-        return dbQueue.sync {
-            guard let db = db else {
-                print("❌ Database not initialized in getUniqueResolutions")
-                return []
+        // Everything is already loaded in memory
+        var resolutionSet = Set<String>()
+        
+        for (path, metadata) in metadataCache {
+            if path.hasPrefix(directoryPath + "/") {
+                resolutionSet.insert(metadata.resolution)
             }
-            
-            let query = "SELECT DISTINCT resolution FROM video_metadata WHERE path LIKE ? ORDER BY resolution"
-            var statement: OpaquePointer?
-            
-            guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
-                print("❌ Failed to prepare getUniqueResolutions query")
-                return []
-            }
-            
-            let pattern = "\(directoryPath)/%"
-            sqlite3_bind_text(statement, 1, pattern, -1, SQLITE_TRANSIENT)
-            
-            defer { sqlite3_finalize(statement) }
-            
-            var resolutions: [String] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
-                let resolution = String(cString: sqlite3_column_text(statement, 0))
-                resolutions.append(resolution)
-            }
-            
-            return resolutions
         }
+        
+        return resolutionSet.sorted()
     }
     
     func getCachedMetadata(for path: String) -> CachedMetadata? {
-        return dbQueue.sync {
-            guard let db = db else {
-                print("❌ Database not initialized in getCachedMetadata")
-                return nil
-            }
-            
-            let query = "SELECT resolution, duration, file_size, last_modified, last_scanned FROM video_metadata WHERE path = ?"
-            var statement: OpaquePointer?
-            
-            guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
-                print("❌ Failed to prepare getCachedMetadata query")
-                return nil
-            }
-            
-            sqlite3_bind_text(statement, 1, path, -1, SQLITE_TRANSIENT)
-            
-            defer { sqlite3_finalize(statement) }
-            
-            let result = sqlite3_step(statement)
-            if result == SQLITE_ROW {
-                let resolution = String(cString: sqlite3_column_text(statement, 0))
-                let duration = sqlite3_column_double(statement, 1)
-                let fileSize = sqlite3_column_int64(statement, 2)
-                let lastModified = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
-                let lastScanned = Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
-            
-            // Debug logging commented out to reduce console spam
-            // let filename = URL(fileURLWithPath: path).lastPathComponent
-            // if filename.hasPrefix("!!") {
-            //     print("✅ Found in DB: \(filename)")
-            //     print("   Resolution: \(resolution)")
-            // }
-            
-                return CachedMetadata(
-                    path: path,
-                    resolution: resolution,
-                    duration: duration,
-                    fileSize: fileSize,
-                    lastModified: lastModified,
-                    lastScanned: lastScanned
-                )
-            } else {
-                // Debug logging commented out to reduce console spam
-                // let filename = URL(fileURLWithPath: path).lastPathComponent
-                // if filename.hasPrefix("!!") {
-                //     print("❌ Not found in DB: \(filename)")
-                //     print("   SQL result: \(result)")
-                //     print("   Path: \(path)")
-                // }
-            }
-            
-            return nil
-        }
+        // Everything is already loaded in memory
+        return metadataCache[path]
     }
     
     func cacheMetadata(_ metadata: CachedMetadata) {
+        // Update memory cache immediately
+        metadataCache[metadata.path] = metadata
+        
+        // Write to database asynchronously
         dbQueue.async { [weak self] in
             guard let self = self else { return }
             
@@ -808,6 +791,10 @@ class VideoMetadataManager: ObservableObject {
     }
     
     func removeMetadata(for path: String) {
+        // Remove from memory cache immediately
+        metadataCache.removeValue(forKey: path)
+        
+        // Remove from database
         let query = "DELETE FROM video_metadata WHERE path = ?"
         var statement: OpaquePointer?
         
