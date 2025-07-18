@@ -821,12 +821,12 @@ struct FilterSidebar: View {
             }
         }
         .onAppear {
-            updateAvailableResolutions()
+            loadVideoResolutionsOptimized()
         }
         .onChange(of: directoryURL) { oldValue, newValue in
             if oldValue != newValue {
                 print("🔄 Directory changed from \(oldValue?.lastPathComponent ?? "nil") to \(newValue?.lastPathComponent ?? "nil")")
-                updateAvailableResolutions()
+                loadVideoResolutionsOptimized()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("videoMetadataLoaded"))) { _ in
@@ -3447,7 +3447,7 @@ struct VideoPlayerContent: View {
         
         // Create player on main queue to avoid threading issues
         DispatchQueue.main.async {
-            let newPlayer = AVPlayer(url: videoURL)
+            let newPlayer = AVPlayer(url: self.videoURL)
             
             // Restore last saved volume and mute state
             if UserDefaults.standard.object(forKey: "lastVideoVolume") != nil {

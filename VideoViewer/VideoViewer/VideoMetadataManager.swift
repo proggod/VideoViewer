@@ -824,6 +824,12 @@ class VideoMetadataManager: ObservableObject {
             return
         }
         
+        // Log file sizes
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: networkPath),
+           let size = attrs[.size] as? Int64 {
+            print("📊 Network DB size before sync: \(size) bytes")
+        }
+        
         print("🔄 Syncing database from network to local cache...")
         print("  From: \(networkPath)")
         print("  To: \(localPath)")
@@ -836,33 +842,114 @@ class VideoMetadataManager: ObservableObject {
             
             // Copy network database to local
             try FileManager.default.copyItem(atPath: networkPath, toPath: localPath)
-            print("✅ Database synced to local cache")
+            
+            // Verify copy succeeded
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: localPath),
+               let size = attrs[.size] as? Int64 {
+                print("✅ Database synced to local cache, size: \(size) bytes")
+            } else {
+                print("✅ Database synced to local cache")
+            }
         } catch {
             print("❌ Failed to sync database: \(error)")
         }
     }
     
     private func syncFromLocalToNetwork() {
-        guard SettingsManager.shared.useLocalDatabaseCache else { return }
+        guard SettingsManager.shared.useLocalDatabaseCache else { 
+            print("📊 Sync skipped - not using local cache")
+            return 
+        }
         
         let networkPath = getNetworkDatabasePath()
         let localPath = getLocalCachePath()
         
         // Only sync if local database exists
-        guard FileManager.default.fileExists(atPath: localPath) else { return }
+        guard FileManager.default.fileExists(atPath: localPath) else { 
+            print("📊 Sync skipped - no local database")
+            return 
+        }
+        
+        print("🔄 Syncing database from local cache to network...")
+        
+        // Log file sizes and validate
+        guard let localAttrs = try? FileManager.default.attributesOfItem(atPath: localPath),
+              let localSize = localAttrs[.size] as? Int64 else {
+            print("❌ Cannot read local database attributes")
+            return
+        }
+        
+        print("📊 Local DB size: \(localSize) bytes")
+        
+        // Don't sync if local database is suspiciously small
+        if localSize < 16384 { // Less than 16KB suggests empty database
+            print("⚠️ Local database is too small (\(localSize) bytes), skipping sync to prevent data loss")
+            return
+        }
+        
+        if FileManager.default.fileExists(atPath: networkPath) {
+            if let networkAttrs = try? FileManager.default.attributesOfItem(atPath: networkPath),
+               let networkSize = networkAttrs[.size] as? Int64 {
+                print("📊 Network DB size before sync: \(networkSize) bytes")
+            }
+        }
         
         do {
-            // Create backup of network database
+            // Create backup of network database only if it has data
             let backupPath = networkPath + ".backup"
             if FileManager.default.fileExists(atPath: networkPath) {
-                try? FileManager.default.removeItem(atPath: backupPath)
-                try FileManager.default.copyItem(atPath: networkPath, toPath: backupPath)
+                // Check if network database has meaningful data before backing up
+                if let networkAttrs = try? FileManager.default.attributesOfItem(atPath: networkPath),
+                   let networkSize = networkAttrs[.size] as? Int64,
+                   networkSize > 32768 { // Only backup if > 32KB (not empty)
+                    
+                    // Check if existing backup is larger (might be a good backup)
+                    var existingBackupSize: Int64 = 0
+                    if let backupAttrs = try? FileManager.default.attributesOfItem(atPath: backupPath),
+                       let backupSize = backupAttrs[.size] as? Int64 {
+                        existingBackupSize = backupSize
+                    }
+                    
+                    // Only replace backup if network DB is larger than existing backup
+                    if networkSize > existingBackupSize {
+                        print("📁 Creating backup (network: \(networkSize) bytes > backup: \(existingBackupSize) bytes)")
+                        try? FileManager.default.removeItem(atPath: backupPath)
+                        try FileManager.default.copyItem(atPath: networkPath, toPath: backupPath)
+                    } else {
+                        print("📁 Keeping existing backup (backup: \(existingBackupSize) bytes >= network: \(networkSize) bytes)")
+                    }
+                } else {
+                    print("⚠️ Network database is empty or too small, not creating backup")
+                }
             }
             
-            // Copy local database to network
-            try FileManager.default.removeItem(atPath: networkPath)
-            try FileManager.default.copyItem(atPath: localPath, toPath: networkPath)
-            // Removed sync logging to reduce console spam
+            // Copy local database to network using safer atomic operation
+            let tempPath = networkPath + ".tmp"
+            
+            // Remove any existing temp file
+            try? FileManager.default.removeItem(atPath: tempPath)
+            
+            // Copy to temp file first
+            try FileManager.default.copyItem(atPath: localPath, toPath: tempPath)
+            
+            // Verify the temp copy is valid
+            guard let tempAttrs = try? FileManager.default.attributesOfItem(atPath: tempPath),
+                  let tempSize = tempAttrs[.size] as? Int64,
+                  tempSize > 0 else {
+                print("❌ Failed to create valid temp file")
+                throw NSError(domain: "VideoMetadataManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid temp file"])
+            }
+            
+            // Now atomically replace the network database
+            // First remove the existing file (replaceItem doesn't work well with network paths)
+            if FileManager.default.fileExists(atPath: networkPath) {
+                try FileManager.default.removeItem(atPath: networkPath)
+            }
+            
+            // Move temp file to final location
+            try FileManager.default.moveItem(atPath: tempPath, toPath: networkPath)
+            
+            print("✅ Database synced to network, size: \(tempSize) bytes")
         } catch {
             print("❌ Failed to sync to network: \(error)")
         }
@@ -883,18 +970,24 @@ class VideoMetadataManager: ObservableObject {
     private func performSync() {
         // Only sync if at least 30 seconds have passed
         let now = Date()
-        if now.timeIntervalSince(lastSyncTime) >= 30.0 {
+        let timeSinceLastSync = now.timeIntervalSince(lastSyncTime)
+        
+        if timeSinceLastSync >= 30.0 {
+            print("⏱️ Background sync triggered (last sync: \(Int(timeSinceLastSync))s ago)")
             syncFromLocalToNetwork()
             lastSyncTime = now
         }
     }
     
     deinit {
+        print("🛑 VideoMetadataManager deinit called")
         syncTimer?.invalidate()
         // Final sync before closing
         if SettingsManager.shared.useLocalDatabaseCache {
+            print("🛑 Performing final sync before closing...")
             syncFromLocalToNetwork()
         }
         sqlite3_close(db)
+        print("🛑 VideoMetadataManager closed")
     }
 }
